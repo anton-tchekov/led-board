@@ -1,0 +1,4755 @@
+   1               		.file	"main.c"
+   2               	__SP_H__ = 0x3e
+   3               	__SP_L__ = 0x3d
+   4               	__SREG__ = 0x3f
+   5               	__tmp_reg__ = 0
+   6               	__zero_reg__ = 1
+   9               		.text
+  10               	.Ltext0:
+ 123               	piece_valid:
+ 124               		.stabd	46,0,0
+   1:main.c        **** #include <avr/io.h>
+   2:main.c        **** #include <avr/interrupt.h>
+   3:main.c        **** #include <stdint.h>
+   4:main.c        **** #include <stdlib.h>
+   5:main.c        **** #include <avr/pgmspace.h>
+   6:main.c        **** #include "ws2812.c"
+   7:main.c        **** 
+   8:main.c        **** #define ARRLEN(x)             (sizeof(x) / sizeof(*x))
+   9:main.c        **** 
+  10:main.c        **** /* RC5 */
+  11:main.c        **** #define RC5_IN                PIND
+  12:main.c        **** #define RC5_PIN              7
+  13:main.c        **** #define RC5_TIME      1.778e-3 /* 1.778 _ms */
+  14:main.c        **** #define RC5_PULSE_MIN         (uint8_t)(F_CPU / 512 * RC5_TIME * 0.4 + 0.5)
+  15:main.c        **** #define RC5_PULSE_1_2         (uint8_t)(F_CPU / 512 * RC5_TIME * 0.8 + 0.5)
+  16:main.c        **** #define RC5_PULSE_MAX         (uint8_t)(F_CPU / 512 * RC5_TIME * 1.2 + 0.5)
+  17:main.c        **** 
+  18:main.c        **** static volatile uint16_t rc5_data;
+  19:main.c        **** 
+  20:main.c        **** 
+  21:main.c        **** /* Remote Control Buttons */
+  22:main.c        **** #define BTN_MODE_SMILEY      1
+  23:main.c        **** #define BTN_MODE_SNAKE       3
+  24:main.c        **** #define BTN_MODE_TETRIS      7
+  25:main.c        **** 
+  26:main.c        **** #define BTN_UP_PRESSED       2
+  27:main.c        **** #define BTN_RIGHT_PRESSED    6
+  28:main.c        **** #define BTN_DOWN_PRESSED     8
+  29:main.c        **** #define BTN_LEFT_PRESSED     4
+  30:main.c        **** 
+  31:main.c        **** 
+  32:main.c        **** /* UART */
+  33:main.c        **** #define UART_BAUD         9600
+  34:main.c        **** #define UART_PRESCALER        (uint16_t)(F_CPU / UART_BAUD / 16 - 0.5)
+  35:main.c        **** 
+  36:main.c        **** int16_t uart_rx(void);
+  37:main.c        **** 
+  38:main.c        **** 
+  39:main.c        **** /* Timer */
+  40:main.c        **** static volatile uint32_t _ms;
+  41:main.c        **** 
+  42:main.c        **** 
+  43:main.c        **** /* Mode */
+  44:main.c        **** enum { MODE_SMILEY, MODE_SNAKE, MODE_TETRIS } static _mode = MODE_SMILEY;
+  45:main.c        **** 
+  46:main.c        **** 
+  47:main.c        **** /* LED Board */
+  48:main.c        **** static color_t black = { 0, 0, 0 };
+  49:main.c        **** 
+  50:main.c        **** 
+  51:main.c        **** /* Smiley */
+  52:main.c        **** #define IMG_COUNT                   5
+  53:main.c        **** #define IMG_BYTES                  32
+  54:main.c        **** #define IMG_RANGE                    (255 / IMG_COUNT)
+  55:main.c        **** 
+  56:main.c        **** static void led_image(const uint8_t *i, color_t *fg, color_t *bg);
+  57:main.c        **** static void img_value(uint8_t v);
+  58:main.c        **** 
+  59:main.c        **** static uint8_t _avg = 255;
+  60:main.c        **** static uint32_t _sum;
+  61:main.c        **** static uint16_t _count;
+  62:main.c        **** 
+  63:main.c        **** static const uint8_t img[IMG_COUNT * IMG_BYTES] PROGMEM =
+  64:main.c        **** {
+  65:main.c        **** 	0x00, 0x00, 0x00, 0x38, 0x0C, 0x3C, 0x1E, 0x0E, 0x1E, 0x06, 0x0C, 0x06, 0x00, 0x06, 0x00, 0x06, 0x
+  66:main.c        **** 	0x00, 0x00, 0x00, 0x18, 0x0C, 0x1C, 0x1E, 0x0C, 0x1E, 0x0C, 0x0C, 0x0C, 0x00, 0x0C, 0x00, 0x0C, 0x
+  67:main.c        **** 	0x00, 0x00, 0x00, 0x0C, 0x0C, 0x0C, 0x1E, 0x0C, 0x1E, 0x0C, 0x0C, 0x0C, 0x00, 0x0C, 0x00, 0x0C, 0x
+  68:main.c        **** 	0x00, 0x00, 0x00, 0x0C, 0x0C, 0x1C, 0x1E, 0x18, 0x1E, 0x18, 0x0C, 0x18, 0x00, 0x18, 0x00, 0x18, 0x
+  69:main.c        **** 	0x00, 0x00, 0x00, 0x0E, 0x0C, 0x1E, 0x1E, 0x38, 0x1E, 0x30, 0x0C, 0x30, 0x00, 0x30, 0x00, 0x30, 0x
+  70:main.c        **** };
+  71:main.c        **** 
+  72:main.c        **** 
+  73:main.c        **** /* Snake */
+  74:main.c        **** #define SNAKE_INITIAL_LEN    4
+  75:main.c        **** #define SNAKE_MAX_LEN       16
+  76:main.c        **** #define SNAKE_MS_UPDATE    240
+  77:main.c        **** 
+  78:main.c        **** static void draw_snake(void);
+  79:main.c        **** static void draw_food(void);
+  80:main.c        **** static void random_food(void);
+  81:main.c        **** static void snake_init(void);
+  82:main.c        **** static uint8_t snake_update(void);
+  83:main.c        **** static void snake_advance(void);
+  84:main.c        **** 
+  85:main.c        **** enum
+  86:main.c        **** {
+  87:main.c        **** 	PAUSE,
+  88:main.c        **** 	UP,
+  89:main.c        **** 	DOWN,
+  90:main.c        **** 	LEFT,
+  91:main.c        **** 	RIGHT
+  92:main.c        **** } _dir;
+  93:main.c        **** 
+  94:main.c        **** struct
+  95:main.c        **** {
+  96:main.c        **** 	int8_t x, y;
+  97:main.c        **** 	uint8_t color;
+  98:main.c        **** } _food;
+  99:main.c        **** 
+ 100:main.c        **** struct
+ 101:main.c        **** {
+ 102:main.c        **** 	struct { int8_t x, y; } blocks[SNAKE_MAX_LEN];
+ 103:main.c        **** 	uint8_t len;
+ 104:main.c        **** 	uint8_t color;
+ 105:main.c        **** } static _snake;
+ 106:main.c        **** 
+ 107:main.c        **** static color_t _snake_colors[7] =
+ 108:main.c        **** {
+ 109:main.c        **** 	{ 255,   0,   0 }, /* Red */
+ 110:main.c        **** 	{   0, 255,   0 }, /* Green */
+ 111:main.c        **** 	{   0,   0, 255 }, /* Blue */
+ 112:main.c        **** 	{ 255, 255,   0 }, /* Yellow */
+ 113:main.c        **** 	{ 255,   0, 255 }, /* Purple */
+ 114:main.c        **** 	{   0, 255, 255 }, /* Cyan */
+ 115:main.c        **** 	{ 255, 128,   0 }, /* Orange */
+ 116:main.c        **** };
+ 117:main.c        **** 
+ 118:main.c        **** static uint16_t _snake_update_ticks;
+ 119:main.c        **** 
+ 120:main.c        **** 
+ 121:main.c        **** /* Tetris */
+ 122:main.c        **** #define FALL_SPEED_DEFAULT 350
+ 123:main.c        **** #define ROTATE_RIGHT         1
+ 124:main.c        **** #define ROTATE_LEFT          1
+ 125:main.c        **** 
+ 126:main.c        **** static void piece_undraw(void);
+ 127:main.c        **** static void piece_draw(void);
+ 128:main.c        **** static void piece_rotate_left(void);
+ 129:main.c        **** static void piece_rotate_right(void);
+ 130:main.c        **** static void piece_move_left(void);
+ 131:main.c        **** static void piece_move_right(void);
+ 132:main.c        **** static void piece_next(void);
+ 133:main.c        **** static uint8_t piece_valid(void);
+ 134:main.c        **** static void piece_to_field(void);
+ 135:main.c        **** 
+ 136:main.c        **** static int8_t field_get(int8_t x, int8_t y);
+ 137:main.c        **** static void field_clear(void);
+ 138:main.c        **** static void field_rows(void);
+ 139:main.c        **** 
+ 140:main.c        **** static uint8_t _field[LED_PIXELS];
+ 141:main.c        **** static volatile uint16_t _tetris_update_ticks;
+ 142:main.c        **** 
+ 143:main.c        **** struct
+ 144:main.c        **** {
+ 145:main.c        **** 	int8_t x, y, rotation;
+ 146:main.c        **** 	enum { I, J, L, O, S, T, Z } type;
+ 147:main.c        **** } _piece;
+ 148:main.c        **** 
+ 149:main.c        **** struct
+ 150:main.c        **** {
+ 151:main.c        **** 	uint16_t blocks[4];
+ 152:main.c        **** 	color_t color;
+ 153:main.c        **** } _pieces[] =
+ 154:main.c        **** {
+ 155:main.c        **** 	{
+ 156:main.c        **** 		/* I */
+ 157:main.c        **** 		{ 0x0F00, 0x2222, 0x00F0, 0x4444 },
+ 158:main.c        **** 		{ 0x00, 0xFF, 0xFF } /* Cyan */
+ 159:main.c        **** 	},
+ 160:main.c        **** 	{
+ 161:main.c        **** 		/* J */
+ 162:main.c        **** 		{ 0x44C0, 0x8E00, 0x6440, 0x0E20 },
+ 163:main.c        **** 		{ 0x00, 0x00, 0xFF } /* Blue */
+ 164:main.c        **** 	},
+ 165:main.c        **** 	{
+ 166:main.c        **** 		/* L */
+ 167:main.c        **** 		{ 0x4460, 0x0E80, 0xC440, 0x2E00 },
+ 168:main.c        **** 		{ 0xFF, 0x7F, 0x00 } /* Orange */
+ 169:main.c        **** 	},
+ 170:main.c        **** 	{
+ 171:main.c        **** 		/* O */
+ 172:main.c        **** 		{ 0xCC00, 0xCC00, 0xCC00, 0xCC00 },
+ 173:main.c        **** 		{ 0xFF, 0xFF, 0x00 } /* Yellow */
+ 174:main.c        **** 	},
+ 175:main.c        **** 	{
+ 176:main.c        **** 		/* S */
+ 177:main.c        **** 		{ 0x06C0, 0x8C40, 0x6C00, 0x4620 },
+ 178:main.c        **** 		{ 0x00, 0xFF, 0x00 } /* Green */
+ 179:main.c        **** 	},
+ 180:main.c        **** 	{
+ 181:main.c        **** 		/* T */
+ 182:main.c        **** 		{ 0x0E40, 0x4C40, 0x4E00, 0x4640 },
+ 183:main.c        **** 		{ 0xFF, 0x00, 0xFF } /* Purple */
+ 184:main.c        **** 	},
+ 185:main.c        **** 	{
+ 186:main.c        **** 		/* Z */
+ 187:main.c        **** 		{ 0x0C60, 0x4C80, 0xC600, 0x2640 },
+ 188:main.c        **** 		{ 0xFF, 0x00, 0x00 } /* Red */
+ 189:main.c        **** 	}
+ 190:main.c        **** };
+ 191:main.c        **** 
+ 192:main.c        **** 
+ 193:main.c        **** void uart_tx(char c)
+ 194:main.c        **** {
+ 195:main.c        **** 	while(!(UCSR0A & (1 << UDRE0))) ;
+ 196:main.c        **** 	UDR0 = c;
+ 197:main.c        **** }
+ 198:main.c        **** 
+ 199:main.c        **** void uart_tx_s(const char *s)
+ 200:main.c        **** {
+ 201:main.c        **** 	register char c;
+ 202:main.c        **** 	while((c = *s++))
+ 203:main.c        **** 	{
+ 204:main.c        **** 		uart_tx(c);
+ 205:main.c        **** 	}
+ 206:main.c        **** }
+ 207:main.c        **** 
+ 208:main.c        **** void uart_tx_P(const char *s)
+ 209:main.c        **** {
+ 210:main.c        **** 	register char c;
+ 211:main.c        **** 	while((c = pgm_read_byte(s++)))
+ 212:main.c        **** 	{
+ 213:main.c        **** 		uart_tx(c);
+ 214:main.c        **** 	}
+ 215:main.c        **** }
+ 216:main.c        **** 
+ 217:main.c        **** int main(void)
+ 218:main.c        **** {
+ 219:main.c        **** 	char buf[3], *p = buf;
+ 220:main.c        **** 	char s[8];
+ 221:main.c        **** 	int16_t c;
+ 222:main.c        **** 
+ 223:main.c        **** 	uint32_t ticks = 0;
+ 224:main.c        **** 	uint16_t i;
+ 225:main.c        **** 
+ 226:main.c        **** 	led_clear(&black);
+ 227:main.c        **** 	led_update();
+ 228:main.c        **** 
+ 229:main.c        **** 	/* MS Timer */
+ 230:main.c        **** 	TCCR0A = (1 << WGM01);
+ 231:main.c        **** 	TCCR0B = (1 << CS01) | (1 << CS00);
+ 232:main.c        **** 	OCR0A = 250;
+ 233:main.c        **** 	TIMSK0 = (1 << OCIE0A);
+ 234:main.c        **** 
+ 235:main.c        **** 	/* RC5 Timer */
+ 236:main.c        **** 	TCCR2B = (1 << CS22) | (1 << CS21);
+ 237:main.c        **** 	TIMSK2 = (1 << TOIE2);
+ 238:main.c        **** 
+ 239:main.c        **** 	/* UART Receiver */
+ 240:main.c        **** 	UBRR0 = UART_PRESCALER;
+ 241:main.c        **** 	UCSR0A = 0;
+ 242:main.c        **** 	UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+ 243:main.c        **** 	UCSR0B = (1 << RXEN0) | (1 << TXEN0);
+ 244:main.c        **** 
+ 245:main.c        **** 	sei();
+ 246:main.c        **** 	img_value(_avg);
+ 247:main.c        **** 
+ 248:main.c        **** 	for(;;)
+ 249:main.c        **** 	{
+ 250:main.c        **** 		if((c = uart_rx()) >= 0)
+ 251:main.c        **** 		{
+ 252:main.c        **** 			if(c == '\n')
+ 253:main.c        **** 			{
+ 254:main.c        **** 				uint8_t val;
+ 255:main.c        **** 				*p = '\0';
+ 256:main.c        **** 				val = strtol(buf, NULL, 16);
+ 257:main.c        **** 				p = buf;
+ 258:main.c        **** 				_sum += val;
+ 259:main.c        **** 				++_count;
+ 260:main.c        **** 				_avg = _sum / _count;
+ 261:main.c        **** 				if(_mode == MODE_SMILEY)
+ 262:main.c        **** 				{
+ 263:main.c        **** 					img_value(_avg);
+ 264:main.c        **** 				}
+ 265:main.c        **** 			}
+ 266:main.c        **** 			else if(p < buf + ARRLEN(buf))
+ 267:main.c        **** 			{
+ 268:main.c        **** 				*p++ = c;
+ 269:main.c        **** 			}
+ 270:main.c        **** 		}
+ 271:main.c        **** 
+ 272:main.c        **** 		cli();
+ 273:main.c        **** 		i = rc5_data;
+ 274:main.c        **** 		rc5_data = 0;
+ 275:main.c        **** 		sei();
+ 276:main.c        **** 
+ 277:main.c        **** 		if(i)
+ 278:main.c        **** 		{
+ 279:main.c        **** 			i = (i & 0x3F) | (~i >> 7 & 0x40);
+ 280:main.c        **** 
+ 281:main.c        **** 			uart_tx_P(PSTR("KEY: "));
+ 282:main.c        **** 			uart_tx_s(itoa(i, s, 10));
+ 283:main.c        **** 			uart_tx_s("\r\n");
+ 284:main.c        **** 
+ 285:main.c        **** 			switch(i)
+ 286:main.c        **** 			{
+ 287:main.c        **** 			case BTN_MODE_SMILEY:
+ 288:main.c        **** 				_mode = MODE_SMILEY;
+ 289:main.c        **** 				img_value(_avg);
+ 290:main.c        **** 				break;
+ 291:main.c        **** 
+ 292:main.c        **** 			case BTN_MODE_SNAKE:
+ 293:main.c        **** 				_mode = MODE_SNAKE;
+ 294:main.c        **** 				snake_init();
+ 295:main.c        **** 				led_update();
+ 296:main.c        **** 				break;
+ 297:main.c        **** 
+ 298:main.c        **** 			case BTN_MODE_TETRIS:
+ 299:main.c        **** 				_mode = MODE_TETRIS;
+ 300:main.c        **** 				_tetris_update_ticks = FALL_SPEED_DEFAULT;
+ 301:main.c        **** 				field_clear();
+ 302:main.c        **** 				led_clear(&black);
+ 303:main.c        **** 				piece_next();
+ 304:main.c        **** 				break;
+ 305:main.c        **** 
+ 306:main.c        **** 			default:
+ 307:main.c        **** 				if(_mode == MODE_SNAKE)
+ 308:main.c        **** 				{
+ 309:main.c        **** 					switch(i)
+ 310:main.c        **** 					{
+ 311:main.c        **** 					case BTN_UP_PRESSED:
+ 312:main.c        **** 						_dir = UP;
+ 313:main.c        **** 						break;
+ 314:main.c        **** 
+ 315:main.c        **** 					case BTN_RIGHT_PRESSED:
+ 316:main.c        **** 						_dir = RIGHT;
+ 317:main.c        **** 						break;
+ 318:main.c        **** 
+ 319:main.c        **** 					case BTN_DOWN_PRESSED:
+ 320:main.c        **** 						_dir = DOWN;
+ 321:main.c        **** 						break;
+ 322:main.c        **** 
+ 323:main.c        **** 					case BTN_LEFT_PRESSED:
+ 324:main.c        **** 						_dir = LEFT;
+ 325:main.c        **** 						break;
+ 326:main.c        **** 					}
+ 327:main.c        **** 				}
+ 328:main.c        **** 				else if(_mode == MODE_TETRIS)
+ 329:main.c        **** 				{
+ 330:main.c        **** 					switch(i)
+ 331:main.c        **** 					{
+ 332:main.c        **** 					case BTN_UP_PRESSED:
+ 333:main.c        **** 						piece_undraw();
+ 334:main.c        **** 						piece_rotate_right();
+ 335:main.c        **** 						piece_draw();
+ 336:main.c        **** 						led_update();
+ 337:main.c        **** 						break;
+ 338:main.c        **** 
+ 339:main.c        **** 					case BTN_RIGHT_PRESSED:
+ 340:main.c        **** 						piece_undraw();
+ 341:main.c        **** 						piece_move_right();
+ 342:main.c        **** 						piece_draw();
+ 343:main.c        **** 						led_update();
+ 344:main.c        **** 						break;
+ 345:main.c        **** 
+ 346:main.c        **** 					case BTN_DOWN_PRESSED:
+ 347:main.c        **** 						piece_undraw();
+ 348:main.c        **** 						piece_rotate_left();
+ 349:main.c        **** 						piece_draw();
+ 350:main.c        **** 						led_update();
+ 351:main.c        **** 						break;
+ 352:main.c        **** 
+ 353:main.c        **** 					case BTN_LEFT_PRESSED:
+ 354:main.c        **** 						piece_undraw();
+ 355:main.c        **** 						piece_move_left();
+ 356:main.c        **** 						piece_draw();
+ 357:main.c        **** 						led_update();
+ 358:main.c        **** 						break;
+ 359:main.c        **** 					}
+ 360:main.c        **** 				}
+ 361:main.c        **** 				break;
+ 362:main.c        **** 			}
+ 363:main.c        **** 		}
+ 364:main.c        **** 
+ 365:main.c        **** 
+ 366:main.c        **** 		if(_mode == MODE_SNAKE)
+ 367:main.c        **** 		{
+ 368:main.c        **** 			if(_ms >= ticks + _snake_update_ticks)
+ 369:main.c        **** 			{
+ 370:main.c        **** 				ticks = _ms;
+ 371:main.c        **** 				if(snake_update())
+ 372:main.c        **** 				{
+ 373:main.c        **** 					snake_init();
+ 374:main.c        **** 				}
+ 375:main.c        **** 
+ 376:main.c        **** 				led_update();
+ 377:main.c        **** 			}
+ 378:main.c        **** 		}
+ 379:main.c        **** 		else if(_mode == MODE_TETRIS)
+ 380:main.c        **** 		{
+ 381:main.c        **** 			if(_ms >= ticks + _tetris_update_ticks)
+ 382:main.c        **** 			{
+ 383:main.c        **** 				ticks = _ms;
+ 384:main.c        **** 				piece_undraw();
+ 385:main.c        **** 				++_piece.y;
+ 386:main.c        **** 				if(!piece_valid())
+ 387:main.c        **** 				{
+ 388:main.c        **** 					if(_piece.y <= 0)
+ 389:main.c        **** 					{
+ 390:main.c        **** 						_tetris_update_ticks = FALL_SPEED_DEFAULT;
+ 391:main.c        **** 						piece_next();
+ 392:main.c        **** 						field_clear();
+ 393:main.c        **** 					}
+ 394:main.c        **** 					else
+ 395:main.c        **** 					{
+ 396:main.c        **** 						--_piece.y;
+ 397:main.c        **** 						piece_to_field();
+ 398:main.c        **** 						field_rows();
+ 399:main.c        **** 						piece_next();
+ 400:main.c        **** 					}
+ 401:main.c        **** 				}
+ 402:main.c        **** 
+ 403:main.c        **** 				piece_draw();
+ 404:main.c        **** 				led_update();
+ 405:main.c        **** 			}
+ 406:main.c        **** 		}
+ 407:main.c        **** 	}
+ 408:main.c        **** 
+ 409:main.c        **** 	return 0;
+ 410:main.c        **** }
+ 411:main.c        **** 
+ 412:main.c        **** 
+ 413:main.c        **** /* UART */
+ 414:main.c        **** int16_t uart_rx(void)
+ 415:main.c        **** {
+ 416:main.c        **** 	if(!(UCSR0A & (1 << RXC0)))
+ 417:main.c        **** 	{
+ 418:main.c        **** 		return -1;
+ 419:main.c        **** 	}
+ 420:main.c        **** 
+ 421:main.c        **** 	return UDR0;
+ 422:main.c        **** }
+ 423:main.c        **** 
+ 424:main.c        **** 
+ 425:main.c        **** /* MS Timer */
+ 426:main.c        **** ISR(TIMER0_COMPA_vect)
+ 427:main.c        **** {
+ 428:main.c        **** 	++_ms;
+ 429:main.c        **** }
+ 430:main.c        **** 
+ 431:main.c        **** 
+ 432:main.c        **** /* RC5 */
+ 433:main.c        **** ISR(TIMER2_OVF_vect)
+ 434:main.c        **** {
+ 435:main.c        **** 	static uint16_t rc5_tmp;
+ 436:main.c        **** 	static uint8_t rc5_bit, rc5_time;
+ 437:main.c        **** 	TCNT2 = -2;
+ 438:main.c        **** 
+ 439:main.c        **** 	if(++rc5_time > RC5_PULSE_MAX)
+ 440:main.c        **** 	{
+ 441:main.c        **** 		if(!(rc5_tmp & 0x4000) && rc5_tmp & 0x2000)
+ 442:main.c        **** 		{
+ 443:main.c        **** 			rc5_data = rc5_tmp;
+ 444:main.c        **** 		}
+ 445:main.c        **** 
+ 446:main.c        **** 		rc5_tmp = 0;
+ 447:main.c        **** 	}
+ 448:main.c        **** 
+ 449:main.c        **** 	if((rc5_bit ^ RC5_IN) & (1 << RC5_PIN))
+ 450:main.c        **** 	{
+ 451:main.c        **** 		rc5_bit = ~rc5_bit;
+ 452:main.c        **** 		if(rc5_time < RC5_PULSE_MIN)
+ 453:main.c        **** 		{
+ 454:main.c        **** 			rc5_tmp = 0;
+ 455:main.c        **** 		}
+ 456:main.c        **** 
+ 457:main.c        **** 		if(!rc5_tmp || rc5_time > RC5_PULSE_1_2)
+ 458:main.c        **** 		{
+ 459:main.c        **** 			if(!(rc5_tmp & 0x4000))
+ 460:main.c        **** 			{
+ 461:main.c        **** 				rc5_tmp <<= 1;
+ 462:main.c        **** 			}
+ 463:main.c        **** 
+ 464:main.c        **** 			if(!(rc5_bit & (1 << RC5_PIN)))
+ 465:main.c        **** 			{
+ 466:main.c        **** 				rc5_tmp |= 1;
+ 467:main.c        **** 			}
+ 468:main.c        **** 
+ 469:main.c        **** 			rc5_time = 0;
+ 470:main.c        **** 		}
+ 471:main.c        **** 	}
+ 472:main.c        **** }
+ 473:main.c        **** 
+ 474:main.c        **** 
+ 475:main.c        **** /* Smiley */
+ 476:main.c        **** static void led_image(const uint8_t *i, color_t *fg, color_t *bg)
+ 477:main.c        **** {
+ 478:main.c        **** 	uint8_t x, y;
+ 479:main.c        **** 	led_clear(bg);
+ 480:main.c        **** 	for(y = 0; y < LED_SIZE; ++y)
+ 481:main.c        **** 	{
+ 482:main.c        **** 		for(x = 0; x < 8; ++x)
+ 483:main.c        **** 		{
+ 484:main.c        **** 			if((pgm_read_byte(i + 2 * y) >> x) & 1)
+ 485:main.c        **** 			{
+ 486:main.c        **** 				led_pixel(y, x, fg);
+ 487:main.c        **** 			}
+ 488:main.c        **** 
+ 489:main.c        **** 			if((pgm_read_byte(i + 2 * y + 1) >> x) & 1)
+ 490:main.c        **** 			{
+ 491:main.c        **** 				led_pixel(y, x + 8, fg);
+ 492:main.c        **** 			}
+ 493:main.c        **** 		}
+ 494:main.c        **** 	}
+ 495:main.c        **** 
+ 496:main.c        **** 	led_update();
+ 497:main.c        **** }
+ 498:main.c        **** 
+ 499:main.c        **** static void img_value(uint8_t v)
+ 500:main.c        **** {
+ 501:main.c        **** 	color_t fg;
+ 502:main.c        **** 	uint8_t i, m = 0;
+ 503:main.c        **** 	for(i = 0; i < IMG_COUNT; ++i)
+ 504:main.c        **** 	{
+ 505:main.c        **** 		if(v >= m && v <= m + IMG_RANGE)
+ 506:main.c        **** 		{
+ 507:main.c        **** 			break;
+ 508:main.c        **** 		}
+ 509:main.c        **** 
+ 510:main.c        **** 		m += IMG_RANGE;
+ 511:main.c        **** 	}
+ 512:main.c        **** 
+ 513:main.c        **** 	if(i >= IMG_COUNT)
+ 514:main.c        **** 	{
+ 515:main.c        **** 		i = IMG_COUNT - 1;
+ 516:main.c        **** 	}
+ 517:main.c        **** 
+ 518:main.c        **** 	fg.B = 0;
+ 519:main.c        **** 	if(v < 128)
+ 520:main.c        **** 	{
+ 521:main.c        **** 		fg.R = 255;
+ 522:main.c        **** 		fg.G = v;
+ 523:main.c        **** 	}
+ 524:main.c        **** 	else
+ 525:main.c        **** 	{
+ 526:main.c        **** 		fg.R = 255 - v;
+ 527:main.c        **** 		fg.G = 255;
+ 528:main.c        **** 	}
+ 529:main.c        **** 
+ 530:main.c        **** 	led_image(img + i * IMG_BYTES, &fg, &black);
+ 531:main.c        **** }
+ 532:main.c        **** 
+ 533:main.c        **** 
+ 534:main.c        **** /* Snake */
+ 535:main.c        **** static void draw_snake(void)
+ 536:main.c        **** {
+ 537:main.c        **** 	uint8_t i;
+ 538:main.c        **** 	for(i = 0; i < _snake.len; ++i)
+ 539:main.c        **** 	{
+ 540:main.c        **** 		led_pixel(_snake.blocks[i].x, _snake.blocks[i].y,
+ 541:main.c        **** 			_snake_colors + _snake.color);
+ 542:main.c        **** 	}
+ 543:main.c        **** }
+ 544:main.c        **** 
+ 545:main.c        **** static void draw_food(void)
+ 546:main.c        **** {
+ 547:main.c        **** 	led_pixel(_food.x, _food.y, _snake_colors + _food.color);
+ 548:main.c        **** }
+ 549:main.c        **** 
+ 550:main.c        **** static void random_food(void)
+ 551:main.c        **** {
+ 552:main.c        **** 	uint8_t i;
+ 553:main.c        **** 	_food.x = -1;
+ 554:main.c        **** 	while(_food.x == -1)
+ 555:main.c        **** 	{
+ 556:main.c        **** 		_food.x = 1 + (rand() % (LED_SIZE - 2));
+ 557:main.c        **** 		_food.y = 1 + (rand() % (LED_SIZE - 2));
+ 558:main.c        **** 		_food.color = rand() % 7;
+ 559:main.c        **** 		if(_food.color == _snake.color)
+ 560:main.c        **** 		{
+ 561:main.c        **** 			_food.x = -1;
+ 562:main.c        **** 			continue;
+ 563:main.c        **** 		}
+ 564:main.c        **** 
+ 565:main.c        **** 		for(i = 0; i < _snake.len; ++i)
+ 566:main.c        **** 		{
+ 567:main.c        **** 			if(_food.x == _snake.blocks[i].x ||
+ 568:main.c        **** 				_food.y == _snake.blocks[i].y)
+ 569:main.c        **** 			{
+ 570:main.c        **** 				_food.x = -1;
+ 571:main.c        **** 				break;
+ 572:main.c        **** 			}
+ 573:main.c        **** 		}
+ 574:main.c        **** 	}
+ 575:main.c        **** }
+ 576:main.c        **** 
+ 577:main.c        **** static void snake_init(void)
+ 578:main.c        **** {
+ 579:main.c        **** 	uint8_t i;
+ 580:main.c        **** 	_dir = 0;
+ 581:main.c        **** 	_snake_update_ticks = SNAKE_MS_UPDATE;
+ 582:main.c        **** 	led_clear(&black);
+ 583:main.c        **** 	_snake.len = SNAKE_INITIAL_LEN;
+ 584:main.c        **** 	for(i = 0; i < SNAKE_INITIAL_LEN; ++i)
+ 585:main.c        **** 	{
+ 586:main.c        **** 		_snake.blocks[i].x = i;
+ 587:main.c        **** 		_snake.blocks[i].y = 0;
+ 588:main.c        **** 	}
+ 589:main.c        **** 
+ 590:main.c        **** 	_snake.color = rand() % 7;
+ 591:main.c        **** 	random_food();
+ 592:main.c        **** 	draw_snake();
+ 593:main.c        **** 	draw_food();
+ 594:main.c        **** }
+ 595:main.c        **** 
+ 596:main.c        **** static uint8_t snake_update(void)
+ 597:main.c        **** {
+ 598:main.c        **** 	if(_dir)
+ 599:main.c        **** 	{
+ 600:main.c        **** 		uint8_t i;
+ 601:main.c        **** 		/* Undraw Snake */
+ 602:main.c        **** 		for(i = 0; i < _snake.len; ++i)
+ 603:main.c        **** 		{
+ 604:main.c        **** 			led_pixel(_snake.blocks[i].x, _snake.blocks[i].y, &black);
+ 605:main.c        **** 		}
+ 606:main.c        **** 
+ 607:main.c        **** 		/* Undraw Food */
+ 608:main.c        **** 		led_pixel(_food.x, _food.y, &black);
+ 609:main.c        **** 
+ 610:main.c        **** 		for(i = 0; i < _snake.len - 1; ++i)
+ 611:main.c        **** 		{
+ 612:main.c        **** 			_snake.blocks[i].x = _snake.blocks[i + 1].x;
+ 613:main.c        **** 			_snake.blocks[i].y = _snake.blocks[i + 1].y;
+ 614:main.c        **** 		}
+ 615:main.c        **** 
+ 616:main.c        **** 		snake_advance();
+ 617:main.c        **** 
+ 618:main.c        **** 		if(_snake.blocks[_snake.len - 1].x < 0 ||
+ 619:main.c        **** 			_snake.blocks[_snake.len - 1].x >= LED_SIZE ||
+ 620:main.c        **** 			_snake.blocks[_snake.len - 1].y < 0 ||
+ 621:main.c        **** 			_snake.blocks[_snake.len - 1].y >= LED_SIZE)
+ 622:main.c        **** 		{
+ 623:main.c        **** 			return 1;
+ 624:main.c        **** 		}
+ 625:main.c        **** 
+ 626:main.c        **** 		for(i = 0; i < _snake.len - 1; ++i)
+ 627:main.c        **** 		{
+ 628:main.c        **** 			if(_snake.blocks[_snake.len - 1].x == _snake.blocks[i].x &&
+ 629:main.c        **** 				_snake.blocks[_snake.len - 1].y == _snake.blocks[i].y)
+ 630:main.c        **** 			{
+ 631:main.c        **** 				return 1;
+ 632:main.c        **** 			}
+ 633:main.c        **** 		}
+ 634:main.c        **** 
+ 635:main.c        **** 		if(_food.x == _snake.blocks[_snake.len - 1].x &&
+ 636:main.c        **** 			_food.y == _snake.blocks[_snake.len - 1].y)
+ 637:main.c        **** 		{
+ 638:main.c        **** 			if(_snake.len + 1 < SNAKE_MAX_LEN)
+ 639:main.c        **** 			{
+ 640:main.c        **** 				++_snake.len;
+ 641:main.c        **** 				_snake.blocks[_snake.len - 1].x =
+ 642:main.c        **** 					_snake.blocks[_snake.len - 2].x;
+ 643:main.c        **** 
+ 644:main.c        **** 				_snake.blocks[_snake.len - 1].y =
+ 645:main.c        **** 					_snake.blocks[_snake.len - 2].y;
+ 646:main.c        **** 
+ 647:main.c        **** 				snake_advance();
+ 648:main.c        **** 			}
+ 649:main.c        **** 
+ 650:main.c        **** 			if(_snake_update_ticks > 20)
+ 651:main.c        **** 			{
+ 652:main.c        **** 				--_snake_update_ticks;
+ 653:main.c        **** 			}
+ 654:main.c        **** 
+ 655:main.c        **** 			_snake.color = _food.color;
+ 656:main.c        **** 			random_food();
+ 657:main.c        **** 		}
+ 658:main.c        **** 
+ 659:main.c        **** 		draw_snake();
+ 660:main.c        **** 		draw_food();
+ 661:main.c        **** 	}
+ 662:main.c        **** 
+ 663:main.c        **** 	return 0;
+ 664:main.c        **** }
+ 665:main.c        **** 
+ 666:main.c        **** static void snake_advance(void)
+ 667:main.c        **** {
+ 668:main.c        **** 	switch(_dir)
+ 669:main.c        **** 	{
+ 670:main.c        **** 	case UP:
+ 671:main.c        **** 		--_snake.blocks[_snake.len - 1].y;
+ 672:main.c        **** 		break;
+ 673:main.c        **** 
+ 674:main.c        **** 	case DOWN:
+ 675:main.c        **** 		++_snake.blocks[_snake.len - 1].y;
+ 676:main.c        **** 		break;
+ 677:main.c        **** 
+ 678:main.c        **** 	case LEFT:
+ 679:main.c        **** 		--_snake.blocks[_snake.len - 1].x;
+ 680:main.c        **** 		break;
+ 681:main.c        **** 
+ 682:main.c        **** 	case RIGHT:
+ 683:main.c        **** 		++_snake.blocks[_snake.len - 1].x;
+ 684:main.c        **** 		break;
+ 685:main.c        **** 
+ 686:main.c        **** 	default:
+ 687:main.c        **** 		break;
+ 688:main.c        **** 	}
+ 689:main.c        **** }
+ 690:main.c        **** 
+ 691:main.c        **** 
+ 692:main.c        **** /* Tetris */
+ 693:main.c        **** static void piece_undraw(void)
+ 694:main.c        **** {
+ 695:main.c        **** 	int8_t row, col;
+ 696:main.c        **** 	uint16_t bit, blocks;
+ 697:main.c        **** 	col = row = 0;
+ 698:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 699:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 700:main.c        **** 	{
+ 701:main.c        **** 		if(blocks & bit)
+ 702:main.c        **** 		{
+ 703:main.c        **** 			led_pixel(_piece.x + col, _piece.y + row, &black);
+ 704:main.c        **** 		}
+ 705:main.c        **** 
+ 706:main.c        **** 		if(++col == 4)
+ 707:main.c        **** 		{
+ 708:main.c        **** 			col = 0;
+ 709:main.c        **** 			++row;
+ 710:main.c        **** 		}
+ 711:main.c        **** 	}
+ 712:main.c        **** }
+ 713:main.c        **** 
+ 714:main.c        **** static void piece_draw(void)
+ 715:main.c        **** {
+ 716:main.c        **** 	int8_t row, col;
+ 717:main.c        **** 	uint16_t bit, blocks;
+ 718:main.c        **** 	col = row = 0;
+ 719:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 720:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 721:main.c        **** 	{
+ 722:main.c        **** 		if(blocks & bit)
+ 723:main.c        **** 		{
+ 724:main.c        **** 			led_pixel(_piece.x + col, _piece.y + row,
+ 725:main.c        **** 				&_pieces[_piece.type].color);
+ 726:main.c        **** 		}
+ 727:main.c        **** 
+ 728:main.c        **** 		if(++col == 4)
+ 729:main.c        **** 		{
+ 730:main.c        **** 			col = 0;
+ 731:main.c        **** 			++row;
+ 732:main.c        **** 		}
+ 733:main.c        **** 	}
+ 734:main.c        **** }
+ 735:main.c        **** 
+ 736:main.c        **** #if defined(ROTATE_RIGHT) && ROTATE_RIGHT
+ 737:main.c        **** static void piece_rotate_right(void)
+ 738:main.c        **** {
+ 739:main.c        **** 	if(++_piece.rotation == 4)
+ 740:main.c        **** 	{
+ 741:main.c        **** 		_piece.rotation = 0;
+ 742:main.c        **** 	}
+ 743:main.c        **** 
+ 744:main.c        **** 	if(!piece_valid())
+ 745:main.c        **** 	{
+ 746:main.c        **** 		if(--_piece.rotation == -1)
+ 747:main.c        **** 		{
+ 748:main.c        **** 			_piece.rotation = 3;
+ 749:main.c        **** 		}
+ 750:main.c        **** 	}
+ 751:main.c        **** }
+ 752:main.c        **** #endif
+ 753:main.c        **** 
+ 754:main.c        **** #if defined(ROTATE_LEFT) && ROTATE_LEFT
+ 755:main.c        **** static void piece_rotate_left(void)
+ 756:main.c        **** {
+ 757:main.c        **** 	if(--_piece.rotation == -1)
+ 758:main.c        **** 	{
+ 759:main.c        **** 		_piece.rotation = 3;
+ 760:main.c        **** 	}
+ 761:main.c        **** 
+ 762:main.c        **** 	if(!piece_valid())
+ 763:main.c        **** 	{
+ 764:main.c        **** 		if(++_piece.rotation == 4)
+ 765:main.c        **** 		{
+ 766:main.c        **** 			_piece.rotation = 0;
+ 767:main.c        **** 		}
+ 768:main.c        **** 	}
+ 769:main.c        **** }
+ 770:main.c        **** #endif
+ 771:main.c        **** 
+ 772:main.c        **** static void piece_move_left(void)
+ 773:main.c        **** {
+ 774:main.c        **** 	--_piece.x;
+ 775:main.c        **** 	if(!piece_valid())
+ 776:main.c        **** 	{
+ 777:main.c        **** 		++_piece.x;
+ 778:main.c        **** 	}
+ 779:main.c        **** }
+ 780:main.c        **** 
+ 781:main.c        **** static void piece_move_right(void)
+ 782:main.c        **** {
+ 783:main.c        **** 	++_piece.x;
+ 784:main.c        **** 	if(!piece_valid())
+ 785:main.c        **** 	{
+ 786:main.c        **** 		--_piece.x;
+ 787:main.c        **** 	}
+ 788:main.c        **** }
+ 789:main.c        **** 
+ 790:main.c        **** static void piece_next(void)
+ 791:main.c        **** {
+ 792:main.c        **** 	static uint8_t bag[7];
+ 793:main.c        **** 	static uint8_t idx = 7;
+ 794:main.c        **** 	uint8_t i, j, v, unique;
+ 795:main.c        **** 	if(idx == 7)
+ 796:main.c        **** 	{
+ 797:main.c        **** 		for(i = 0; i < 7; ++i)
+ 798:main.c        **** 		{
+ 799:main.c        **** 			unique = 0;
+ 800:main.c        **** 			while(!unique)
+ 801:main.c        **** 			{
+ 802:main.c        **** 				unique = 1;
+ 803:main.c        **** 				v = rand() % 7;
+ 804:main.c        **** 				for(j = 0; j < i; ++j)
+ 805:main.c        **** 				{
+ 806:main.c        **** 					if(bag[j] == v)
+ 807:main.c        **** 					{
+ 808:main.c        **** 						unique = 0;
+ 809:main.c        **** 						break;
+ 810:main.c        **** 					}
+ 811:main.c        **** 				}
+ 812:main.c        **** 			}
+ 813:main.c        **** 
+ 814:main.c        **** 			bag[i] = v;
+ 815:main.c        **** 		}
+ 816:main.c        **** 
+ 817:main.c        **** 		idx = 0;
+ 818:main.c        **** 	}
+ 819:main.c        **** 
+ 820:main.c        **** 	_piece.x = LED_SIZE / 2 - 2;
+ 821:main.c        **** 	_piece.y = -4;
+ 822:main.c        **** 	_piece.rotation = 0;
+ 823:main.c        **** 	_piece.type = bag[idx++];
+ 824:main.c        **** }
+ 825:main.c        **** 
+ 826:main.c        **** static uint8_t piece_valid(void)
+ 827:main.c        **** {
+ 126               	.LM0:
+ 127               	.LFBB1:
+ 128 0000 1F93      		push r17
+ 129 0002 CF93      		push r28
+ 130 0004 DF93      		push r29
+ 131               	/* prologue: function */
+ 132               	/* frame size = 0 */
+ 133               	/* stack size = 3 */
+ 134               	.L__stack_usage = 3
+ 828:main.c        **** 	int8_t row, col;
+ 829:main.c        **** 	uint16_t bit, blocks;
+ 830:main.c        **** 	row = col = 0;
+ 831:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 136               	.LM1:
+ 137 0006 E091 0000 		lds r30,_piece+2
+ 139               	.LM2:
+ 140 000a 8091 0000 		lds r24,_piece+3
+ 142               	.LM3:
+ 143 000e EE0F      		lsl r30
+ 144 0010 FF0B      		sbc r31,r31
+ 145 0012 9BE0      		ldi r25,lo8(11)
+ 146 0014 899F      		mul r24,r25
+ 147 0016 E00D      		add r30,r0
+ 148 0018 F11D      		adc r31,r1
+ 149 001a 1124      		clr __zero_reg__
+ 150 001c E050      		subi r30,lo8(-(_pieces))
+ 151 001e F040      		sbci r31,hi8(-(_pieces))
+ 152 0020 C081      		ld r28,Z
+ 153 0022 D181      		ldd r29,Z+1
+ 832:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 833:main.c        **** 	{
+ 834:main.c        **** 		if((blocks & bit) && field_get(_piece.x + col, _piece.y + row))
+ 155               	.LM4:
+ 156 0024 F091 0000 		lds r31,_piece+1
+ 158               	.LM5:
+ 159 0028 1091 0000 		lds r17,_piece
+ 160 002c 40E1      		ldi r20,lo8(16)
+ 161 002e 50E0      		ldi r21,0
+ 832:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 163               	.LM6:
+ 164 0030 60E0      		ldi r22,0
+ 165 0032 70E8      		ldi r23,lo8(-128)
+ 830:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 167               	.LM7:
+ 168 0034 20E0      		ldi r18,0
+ 830:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 170               	.LM8:
+ 171 0036 E0E0      		ldi r30,0
+ 172               	.L5:
+ 174               	.LM9:
+ 175 0038 CE01      		movw r24,r28
+ 176 003a 8623      		and r24,r22
+ 177 003c 9723      		and r25,r23
+ 179               	.LM10:
+ 180 003e 892B      		or r24,r25
+ 181 0040 01F0      		breq .L2
+ 183               	.LM11:
+ 184 0042 8E2F      		mov r24,r30
+ 185 0044 8F0F      		add r24,r31
+ 187               	.LM12:
+ 188 0046 312F      		mov r19,r17
+ 189 0048 320F      		add r19,r18
+ 190               	.LBB13:
+ 191               	.LBB14:
+ 835:main.c        **** 		{
+ 836:main.c        **** 			return 0;
+ 837:main.c        **** 		}
+ 838:main.c        **** 
+ 839:main.c        **** 		if(++col == 4)
+ 840:main.c        **** 		{
+ 841:main.c        **** 			col = 0;
+ 842:main.c        **** 			++row;
+ 843:main.c        **** 		}
+ 844:main.c        **** 	}
+ 845:main.c        **** 
+ 846:main.c        **** 	return 1;
+ 847:main.c        **** }
+ 848:main.c        **** 
+ 849:main.c        **** static void piece_to_field(void)
+ 850:main.c        **** {
+ 851:main.c        **** 	int8_t row, col;
+ 852:main.c        **** 	uint16_t bit, blocks;
+ 853:main.c        **** 	row = col = 0;
+ 854:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 855:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 856:main.c        **** 	{
+ 857:main.c        **** 		if(blocks & bit)
+ 858:main.c        **** 		{
+ 859:main.c        **** 			int8_t x, y;
+ 860:main.c        **** 			x = _piece.x + col;
+ 861:main.c        **** 			y = _piece.y + row;
+ 862:main.c        **** 			_field[y * LED_SIZE + x] = _piece.type + 1;
+ 863:main.c        **** 			led_pixel(x, y, &_pieces[_piece.type].color);
+ 864:main.c        **** 		}
+ 865:main.c        **** 
+ 866:main.c        **** 		if(++col == 4)
+ 867:main.c        **** 		{
+ 868:main.c        **** 			col = 0;
+ 869:main.c        **** 			++row;
+ 870:main.c        **** 		}
+ 871:main.c        **** 	}
+ 872:main.c        **** }
+ 873:main.c        **** 
+ 874:main.c        **** static int8_t field_get(int8_t x, int8_t y)
+ 875:main.c        **** {
+ 876:main.c        **** 	if(x >= 0 && x < LED_SIZE && y < LED_SIZE)
+ 193               	.LM13:
+ 194 004a 3031      		cpi r19,lo8(16)
+ 195 004c 00F4      		brsh .L8
+ 197               	.LM14:
+ 198 004e 8031      		cpi r24,lo8(16)
+ 199 0050 04F4      		brge .L8
+ 877:main.c        **** 	{
+ 878:main.c        **** 		if(y < 0)
+ 201               	.LM15:
+ 202 0052 87FD      		sbrc r24,7
+ 203 0054 00C0      		rjmp .L2
+ 879:main.c        **** 		{
+ 880:main.c        **** 			return 0;
+ 881:main.c        **** 		}
+ 882:main.c        **** 		else
+ 883:main.c        **** 		{
+ 884:main.c        **** 			return _field[y * LED_SIZE + x];
+ 205               	.LM16:
+ 206 0056 A0E1      		ldi r26,lo8(16)
+ 207 0058 8A02      		muls r24,r26
+ 208 005a C001      		movw r24,r0
+ 209 005c 1124      		clr __zero_reg__
+ 211               	.LM17:
+ 212 005e 8050      		subi r24,lo8(-(_field))
+ 213 0060 9040      		sbci r25,hi8(-(_field))
+ 214 0062 830F      		add r24,r19
+ 215 0064 911D      		adc r25,__zero_reg__
+ 216               	.LBE14:
+ 217               	.LBE13:
+ 834:main.c        **** 		{
+ 219               	.LM18:
+ 220 0066 DC01      		movw r26,r24
+ 221 0068 8C91      		ld r24,X
+ 222 006a 8111      		cpse r24,__zero_reg__
+ 223 006c 00C0      		rjmp .L8
+ 224               	.L2:
+ 839:main.c        **** 		{
+ 226               	.LM19:
+ 227 006e 2F5F      		subi r18,lo8(-(1))
+ 839:main.c        **** 		{
+ 229               	.LM20:
+ 230 0070 2430      		cpi r18,lo8(4)
+ 231 0072 01F4      		brne .L4
+ 842:main.c        **** 		}
+ 233               	.LM21:
+ 234 0074 EF5F      		subi r30,lo8(-(1))
+ 841:main.c        **** 			++row;
+ 236               	.LM22:
+ 237 0076 20E0      		ldi r18,0
+ 238               	.L4:
+ 832:main.c        **** 	{
+ 240               	.LM23:
+ 241 0078 7695      		lsr r23
+ 242 007a 6795      		ror r22
+ 243 007c 4150      		subi r20,1
+ 244 007e 5109      		sbc r21,__zero_reg__
+ 832:main.c        **** 	{
+ 246               	.LM24:
+ 247 0080 01F4      		brne .L5
+ 846:main.c        **** }
+ 249               	.LM25:
+ 250 0082 81E0      		ldi r24,lo8(1)
+ 251               	.L1:
+ 252               	/* epilogue start */
+ 847:main.c        **** 
+ 254               	.LM26:
+ 255 0084 DF91      		pop r29
+ 256 0086 CF91      		pop r28
+ 257 0088 1F91      		pop r17
+ 258 008a 0895      		ret
+ 259               	.L8:
+ 836:main.c        **** 		}
+ 261               	.LM27:
+ 262 008c 80E0      		ldi r24,0
+ 263 008e 00C0      		rjmp .L1
+ 271               	.Lscope1:
+ 273               		.stabd	78,0,0
+ 276               	random_food:
+ 277               		.stabd	46,0,0
+ 551:main.c        **** 	uint8_t i;
+ 279               	.LM28:
+ 280               	.LFBB2:
+ 281 0090 FF92      		push r15
+ 282 0092 0F93      		push r16
+ 283 0094 1F93      		push r17
+ 284 0096 CF93      		push r28
+ 285 0098 DF93      		push r29
+ 286               	/* prologue: function */
+ 287               	/* frame size = 0 */
+ 288               	/* stack size = 5 */
+ 289               	.L__stack_usage = 5
+ 553:main.c        **** 	while(_food.x == -1)
+ 291               	.LM29:
+ 292 009a 8FEF      		ldi r24,lo8(-1)
+ 293 009c 8093 0000 		sts _food,r24
+ 556:main.c        **** 		_food.y = 1 + (rand() % (LED_SIZE - 2));
+ 295               	.LM30:
+ 296 00a0 CEE0      		ldi r28,lo8(14)
+ 297 00a2 D0E0      		ldi r29,0
+ 558:main.c        **** 		if(_food.color == _snake.color)
+ 299               	.LM31:
+ 300 00a4 07E0      		ldi r16,lo8(7)
+ 301 00a6 10E0      		ldi r17,0
+ 561:main.c        **** 			continue;
+ 303               	.LM32:
+ 304 00a8 FF24      		clr r15
+ 305 00aa FA94      		dec r15
+ 306               	.L19:
+ 556:main.c        **** 		_food.y = 1 + (rand() % (LED_SIZE - 2));
+ 308               	.LM33:
+ 309 00ac 0E94 0000 		call rand
+ 556:main.c        **** 		_food.y = 1 + (rand() % (LED_SIZE - 2));
+ 311               	.LM34:
+ 312 00b0 BE01      		movw r22,r28
+ 313 00b2 0E94 0000 		call __divmodhi4
+ 556:main.c        **** 		_food.y = 1 + (rand() % (LED_SIZE - 2));
+ 315               	.LM35:
+ 316 00b6 8F5F      		subi r24,lo8(-(1))
+ 556:main.c        **** 		_food.y = 1 + (rand() % (LED_SIZE - 2));
+ 318               	.LM36:
+ 319 00b8 8093 0000 		sts _food,r24
+ 557:main.c        **** 		_food.color = rand() % 7;
+ 321               	.LM37:
+ 322 00bc 0E94 0000 		call rand
+ 557:main.c        **** 		_food.color = rand() % 7;
+ 324               	.LM38:
+ 325 00c0 BE01      		movw r22,r28
+ 326 00c2 0E94 0000 		call __divmodhi4
+ 557:main.c        **** 		_food.color = rand() % 7;
+ 328               	.LM39:
+ 329 00c6 8F5F      		subi r24,lo8(-(1))
+ 557:main.c        **** 		_food.color = rand() % 7;
+ 331               	.LM40:
+ 332 00c8 8093 0000 		sts _food+1,r24
+ 558:main.c        **** 		if(_food.color == _snake.color)
+ 334               	.LM41:
+ 335 00cc 0E94 0000 		call rand
+ 558:main.c        **** 		if(_food.color == _snake.color)
+ 337               	.LM42:
+ 338 00d0 B801      		movw r22,r16
+ 339 00d2 0E94 0000 		call __divmodhi4
+ 558:main.c        **** 		if(_food.color == _snake.color)
+ 341               	.LM43:
+ 342 00d6 8093 0000 		sts _food+2,r24
+ 559:main.c        **** 		{
+ 344               	.LM44:
+ 345 00da 9091 0000 		lds r25,_snake+33
+ 346 00de 9817      		cp r25,r24
+ 347 00e0 01F0      		breq .L14
+ 565:main.c        **** 		{
+ 349               	.LM45:
+ 350 00e2 2091 0000 		lds r18,_snake+32
+ 567:main.c        **** 				_food.y == _snake.blocks[i].y)
+ 352               	.LM46:
+ 353 00e6 9091 0000 		lds r25,_food
+ 568:main.c        **** 			{
+ 355               	.LM47:
+ 356 00ea 3091 0000 		lds r19,_food+1
+ 357 00ee E0E0      		ldi r30,lo8(_snake)
+ 358 00f0 F0E0      		ldi r31,hi8(_snake)
+ 565:main.c        **** 		{
+ 360               	.LM48:
+ 361 00f2 80E0      		ldi r24,0
+ 362               	.L15:
+ 565:main.c        **** 		{
+ 364               	.LM49:
+ 365 00f4 2813      		cpse r18,r24
+ 366 00f6 00C0      		rjmp .L17
+ 554:main.c        **** 	{
+ 368               	.LM50:
+ 369 00f8 9F3F      		cpi r25,lo8(-1)
+ 370 00fa 01F0      		breq .L19
+ 371               	/* epilogue start */
+ 575:main.c        **** 
+ 373               	.LM51:
+ 374 00fc DF91      		pop r29
+ 375 00fe CF91      		pop r28
+ 376 0100 1F91      		pop r17
+ 377 0102 0F91      		pop r16
+ 378 0104 FF90      		pop r15
+ 379 0106 0895      		ret
+ 380               	.L14:
+ 561:main.c        **** 			continue;
+ 382               	.LM52:
+ 383 0108 F092 0000 		sts _food,r15
+ 384 010c 00C0      		rjmp .L19
+ 385               	.L17:
+ 567:main.c        **** 				_food.y == _snake.blocks[i].y)
+ 387               	.LM53:
+ 388 010e 4081      		ld r20,Z
+ 389 0110 9417      		cp r25,r20
+ 390 0112 01F0      		breq .L14
+ 391 0114 3296      		adiw r30,2
+ 568:main.c        **** 			{
+ 393               	.LM54:
+ 394 0116 DF01      		movw r26,r30
+ 395 0118 1197      		sbiw r26,1
+ 567:main.c        **** 				_food.y == _snake.blocks[i].y)
+ 397               	.LM55:
+ 398 011a 4C91      		ld r20,X
+ 399 011c 3417      		cp r19,r20
+ 400 011e 01F0      		breq .L14
+ 565:main.c        **** 		{
+ 402               	.LM56:
+ 403 0120 8F5F      		subi r24,lo8(-(1))
+ 404 0122 00C0      		rjmp .L15
+ 409               	.Lscope2:
+ 411               		.stabd	78,0,0
+ 414               	piece_next:
+ 415               		.stabd	46,0,0
+ 791:main.c        **** 	static uint8_t bag[7];
+ 417               	.LM57:
+ 418               	.LFBB3:
+ 419 0124 CF92      		push r12
+ 420 0126 DF92      		push r13
+ 421 0128 EF92      		push r14
+ 422 012a FF92      		push r15
+ 423 012c 0F93      		push r16
+ 424 012e 1F93      		push r17
+ 425 0130 CF93      		push r28
+ 426               	/* prologue: function */
+ 427               	/* frame size = 0 */
+ 428               	/* stack size = 7 */
+ 429               	.L__stack_usage = 7
+ 795:main.c        **** 	{
+ 431               	.LM58:
+ 432 0132 8091 0000 		lds r24,idx.1661
+ 433 0136 8730      		cpi r24,lo8(7)
+ 434 0138 01F4      		brne .L22
+ 435 013a 80E0      		ldi r24,lo8(bag.1660)
+ 436 013c E82E      		mov r14,r24
+ 437 013e 80E0      		ldi r24,hi8(bag.1660)
+ 438 0140 F82E      		mov r15,r24
+ 439 0142 8701      		movw r16,r14
+ 797:main.c        **** 		{
+ 441               	.LM59:
+ 442 0144 C0E0      		ldi r28,0
+ 803:main.c        **** 				for(j = 0; j < i; ++j)
+ 444               	.LM60:
+ 445 0146 97E0      		ldi r25,lo8(7)
+ 446 0148 C92E      		mov r12,r25
+ 447 014a D12C      		mov r13,__zero_reg__
+ 448 014c 00C0      		rjmp .L24
+ 449               	.L25:
+ 806:main.c        **** 					{
+ 451               	.LM61:
+ 452 014e 9191      		ld r25,Z+
+ 806:main.c        **** 					{
+ 454               	.LM62:
+ 455 0150 9813      		cpse r25,r24
+ 456 0152 00C0      		rjmp .L23
+ 457               	.L24:
+ 803:main.c        **** 				for(j = 0; j < i; ++j)
+ 459               	.LM63:
+ 460 0154 0E94 0000 		call rand
+ 803:main.c        **** 				for(j = 0; j < i; ++j)
+ 462               	.LM64:
+ 463 0158 B601      		movw r22,r12
+ 464 015a 0E94 0000 		call __divmodhi4
+ 804:main.c        **** 				{
+ 466               	.LM65:
+ 467 015e E0E0      		ldi r30,lo8(bag.1660)
+ 468 0160 F0E0      		ldi r31,hi8(bag.1660)
+ 469               	.L23:
+ 804:main.c        **** 				{
+ 471               	.LM66:
+ 472 0162 9E2F      		mov r25,r30
+ 473 0164 9E19      		sub r25,r14
+ 474 0166 9C17      		cp r25,r28
+ 475 0168 00F0      		brlo .L25
+ 814:main.c        **** 		}
+ 477               	.LM67:
+ 478 016a F801      		movw r30,r16
+ 479 016c 8193      		st Z+,r24
+ 480 016e 8F01      		movw r16,r30
+ 797:main.c        **** 		{
+ 482               	.LM68:
+ 483 0170 CF5F      		subi r28,lo8(-(1))
+ 797:main.c        **** 		{
+ 485               	.LM69:
+ 486 0172 C730      		cpi r28,lo8(7)
+ 487 0174 01F4      		brne .L24
+ 817:main.c        **** 	}
+ 489               	.LM70:
+ 490 0176 1092 0000 		sts idx.1661,__zero_reg__
+ 491               	.L22:
+ 820:main.c        **** 	_piece.y = -4;
+ 493               	.LM71:
+ 494 017a 86E0      		ldi r24,lo8(6)
+ 495 017c 8093 0000 		sts _piece,r24
+ 821:main.c        **** 	_piece.rotation = 0;
+ 497               	.LM72:
+ 498 0180 8CEF      		ldi r24,lo8(-4)
+ 499 0182 8093 0000 		sts _piece+1,r24
+ 822:main.c        **** 	_piece.type = bag[idx++];
+ 501               	.LM73:
+ 502 0186 1092 0000 		sts _piece+2,__zero_reg__
+ 823:main.c        **** }
+ 504               	.LM74:
+ 505 018a E091 0000 		lds r30,idx.1661
+ 506 018e 81E0      		ldi r24,lo8(1)
+ 507 0190 8E0F      		add r24,r30
+ 508 0192 8093 0000 		sts idx.1661,r24
+ 509 0196 F0E0      		ldi r31,0
+ 823:main.c        **** }
+ 511               	.LM75:
+ 512 0198 E050      		subi r30,lo8(-(bag.1660))
+ 513 019a F040      		sbci r31,hi8(-(bag.1660))
+ 823:main.c        **** }
+ 515               	.LM76:
+ 516 019c 8081      		ld r24,Z
+ 517 019e 8093 0000 		sts _piece+3,r24
+ 518               	/* epilogue start */
+ 824:main.c        **** 
+ 520               	.LM77:
+ 521 01a2 CF91      		pop r28
+ 522 01a4 1F91      		pop r17
+ 523 01a6 0F91      		pop r16
+ 524 01a8 FF90      		pop r15
+ 525 01aa EF90      		pop r14
+ 526 01ac DF90      		pop r13
+ 527 01ae CF90      		pop r12
+ 528 01b0 0895      		ret
+ 536               	.Lscope3:
+ 538               		.stabd	78,0,0
+ 544               	led_pixel:
+ 545               		.stabd	46,0,0
+ 547               	.Ltext1:
+   1:ws2812.c      **** #define WS2812_OUT            PORTB
+   2:ws2812.c      **** #define WS2812_DIR            DDRB
+   3:ws2812.c      **** 
+   4:ws2812.c      **** #define LED_SIZE            16
+   5:ws2812.c      **** #define LED_PIXELS            (LED_SIZE * LED_SIZE)
+   6:ws2812.c      **** #define LED_BYTES             (3 * LED_PIXELS)
+   7:ws2812.c      **** 
+   8:ws2812.c      **** #define W_ZERO_PULSE    350
+   9:ws2812.c      **** #define W_ONE_PULSE     900
+  10:ws2812.c      **** #define W_TOTAL_PERIOD 1250
+  11:ws2812.c      **** #define W_FIXED_LOW       2
+  12:ws2812.c      **** #define W_FIXED_HIGH      4
+  13:ws2812.c      **** #define W_FIXED_TOTAL     8
+  14:ws2812.c      **** 
+  15:ws2812.c      **** #define W_ZERO_CYCLE \
+  16:ws2812.c      **** 	(((F_CPU / 1000) * W_ZERO_PULSE) / 1000000)
+  17:ws2812.c      **** 
+  18:ws2812.c      **** #define W_ONE_CYCLE \
+  19:ws2812.c      **** 	(((F_CPU / 1000) * W_ONE_PULSE + 500000) / 1000000)
+  20:ws2812.c      **** 
+  21:ws2812.c      **** #define W_TOTAL_CYCLE \
+  22:ws2812.c      **** 	(((F_CPU / 1000) * W_TOTAL_PERIOD + 500000) / 1000000)
+  23:ws2812.c      **** 
+  24:ws2812.c      **** #define W1 \
+  25:ws2812.c      **** 	(W_ZERO_CYCLE - W_FIXED_LOW)
+  26:ws2812.c      **** 
+  27:ws2812.c      **** #define W2 \
+  28:ws2812.c      **** 	(W_ONE_CYCLE - W_FIXED_HIGH - W1)
+  29:ws2812.c      **** 
+  30:ws2812.c      **** #define W3 \
+  31:ws2812.c      **** 	(W_TOTAL_CYCLE - W_FIXED_TOTAL - W1 - W2)
+  32:ws2812.c      **** 
+  33:ws2812.c      **** #if (W1 > 0)
+  34:ws2812.c      **** #define W1_NOPS W1
+  35:ws2812.c      **** #else
+  36:ws2812.c      **** #define W1_NOPS  0
+  37:ws2812.c      **** #endif
+  38:ws2812.c      **** 
+  39:ws2812.c      **** #define W_LOW_TIME \
+  40:ws2812.c      **** 	(((W1_NOPS + W_FIXED_LOW) * 1000000) / (F_CPU / 1000))
+  41:ws2812.c      **** 
+  42:ws2812.c      **** #if (W_LOW_TIME > 550)
+  43:ws2812.c      **** #error "F_CPU to low"
+  44:ws2812.c      **** #elif (W_LOW_TIME > 450)
+  45:ws2812.c      **** #warning "Critical timing"
+  46:ws2812.c      **** #endif
+  47:ws2812.c      **** 
+  48:ws2812.c      **** #if (W2 > 0)
+  49:ws2812.c      **** #define W2_NOPS W2
+  50:ws2812.c      **** #else
+  51:ws2812.c      **** #define W2_NOPS  0
+  52:ws2812.c      **** #endif
+  53:ws2812.c      **** 
+  54:ws2812.c      **** #if (W3 > 0)
+  55:ws2812.c      **** #define W3_NOPS W3
+  56:ws2812.c      **** #else
+  57:ws2812.c      **** #define W3_NOPS  0
+  58:ws2812.c      **** #endif
+  59:ws2812.c      **** 
+  60:ws2812.c      **** #define W_NOP1  "nop      \n\t"
+  61:ws2812.c      **** #define W_NOP2  "rjmp .+0 \n\t"
+  62:ws2812.c      **** #define W_NOP4  W_NOP2 W_NOP2
+  63:ws2812.c      **** #define W_NOP8  W_NOP4 W_NOP4
+  64:ws2812.c      **** #define W_NOP16 W_NOP8 W_NOP8
+  65:ws2812.c      **** 
+  66:ws2812.c      **** typedef struct COLOR { uint8_t R, G, B; } color_t;
+  67:ws2812.c      **** static uint8_t _pixels[LED_BYTES];
+  68:ws2812.c      **** 
+  69:ws2812.c      **** static void led_update(void);
+  70:ws2812.c      **** static void led_pixel(uint8_t x, uint8_t y, color_t *c);
+  71:ws2812.c      **** static void led_clear(color_t *c);
+  72:ws2812.c      **** static void ws2812(uint8_t *pixels, uint16_t count, uint8_t pin);
+  73:ws2812.c      **** 
+  74:ws2812.c      **** static void led_update(void)
+  75:ws2812.c      **** {
+  76:ws2812.c      **** 	ws2812(_pixels, 128 * 3, 1);
+  77:ws2812.c      **** 	ws2812(_pixels + 128 * 3, 128 * 3, 2);
+  78:ws2812.c      **** }
+  79:ws2812.c      **** 
+  80:ws2812.c      **** static void led_pixel(uint8_t x, uint8_t y, color_t *c)
+  81:ws2812.c      **** {
+ 549               	.LM78:
+ 550               	.LFBB4:
+ 551               	/* prologue: function */
+ 552               	/* frame size = 0 */
+ 553               	/* stack size = 0 */
+ 554               	.L__stack_usage = 0
+ 555 01b2 DA01      		movw r26,r20
+  82:ws2812.c      **** 	if(x < LED_SIZE && y < LED_SIZE)
+ 557               	.LM79:
+ 558 01b4 8031      		cpi r24,lo8(16)
+ 559 01b6 00F4      		brsh .L34
+ 561               	.LM80:
+ 562 01b8 6031      		cpi r22,lo8(16)
+ 563 01ba 00F4      		brsh .L34
+ 564 01bc 90E1      		ldi r25,lo8(16)
+ 565 01be 899F      		mul r24,r25
+ 566 01c0 9001      		movw r18,r0
+ 567 01c2 1124      		clr __zero_reg__
+ 568               	.LBB18:
+ 569               	.LBB19:
+ 570               	.LBB20:
+  83:ws2812.c      **** 	{
+  84:ws2812.c      **** 		uint16_t i;
+  85:ws2812.c      **** 		y = LED_SIZE - 1 - y;
+ 572               	.LM81:
+ 573 01c4 9FE0      		ldi r25,lo8(15)
+ 574 01c6 961B      		sub r25,r22
+ 575 01c8 E92F      		mov r30,r25
+ 576 01ca F0E0      		ldi r31,0
+  86:ws2812.c      **** 		i = 3 * ((x % 2) ? ((LED_SIZE * x) + ((LED_SIZE - 1) - y)) :
+ 578               	.LM82:
+ 579 01cc 80FF      		sbrs r24,0
+ 580 01ce 00C0      		rjmp .L36
+ 582               	.LM83:
+ 583 01d0 C901      		movw r24,r18
+ 584 01d2 8E1B      		sub r24,r30
+ 585 01d4 9F0B      		sbc r25,r31
+ 587               	.LM84:
+ 588 01d6 0F96      		adiw r24,15
+ 590               	.LM85:
+ 591 01d8 FC01      		movw r30,r24
+ 592 01da EE0F      		lsl r30
+ 593 01dc FF1F      		rol r31
+ 594 01de E80F      		add r30,r24
+ 595 01e0 F91F      		adc r31,r25
+ 596               	.L37:
+  87:ws2812.c      **** 			(LED_SIZE * x + y));
+  88:ws2812.c      **** 		_pixels[i] = c->G;
+ 598               	.LM86:
+ 599 01e2 1196      		adiw r26,1
+ 600 01e4 8C91      		ld r24,X
+ 601 01e6 1197      		sbiw r26,1
+ 603               	.LM87:
+ 604 01e8 E050      		subi r30,lo8(-(_pixels))
+ 605 01ea F040      		sbci r31,hi8(-(_pixels))
+ 606 01ec 8083      		st Z,r24
+  89:ws2812.c      **** 		_pixels[++i] = c->R;
+ 608               	.LM88:
+ 609 01ee 8C91      		ld r24,X
+ 611               	.LM89:
+ 612 01f0 8183      		std Z+1,r24
+  90:ws2812.c      **** 		_pixels[++i] = c->B;
+ 614               	.LM90:
+ 615 01f2 1296      		adiw r26,2
+ 616 01f4 8C91      		ld r24,X
+ 618               	.LM91:
+ 619 01f6 8283      		std Z+2,r24
+ 620               	.L34:
+ 621               	/* epilogue start */
+ 622               	.LBE20:
+ 623               	.LBE19:
+ 624               	.LBE18:
+  91:ws2812.c      **** 	}
+  92:ws2812.c      **** }
+ 626               	.LM92:
+ 627 01f8 0895      		ret
+ 628               	.L36:
+ 629               	.LBB23:
+ 630               	.LBB22:
+ 631               	.LBB21:
+  87:ws2812.c      **** 		_pixels[i] = c->G;
+ 633               	.LM93:
+ 634 01fa 2E0F      		add r18,r30
+ 635 01fc 3F1F      		adc r19,r31
+  86:ws2812.c      **** 			(LED_SIZE * x + y));
+ 637               	.LM94:
+ 638 01fe F901      		movw r30,r18
+ 639 0200 EE0F      		lsl r30
+ 640 0202 FF1F      		rol r31
+ 641 0204 E20F      		add r30,r18
+ 642 0206 F31F      		adc r31,r19
+ 643 0208 00C0      		rjmp .L37
+ 644               	.LBE21:
+ 645               	.LBE22:
+ 646               	.LBE23:
+ 648               	.Lscope4:
+ 650               		.stabd	78,0,0
+ 653               	draw_snake:
+ 654               		.stabd	46,0,0
+ 656               	.Ltext2:
+ 536:main.c        **** 	uint8_t i;
+ 658               	.LM95:
+ 659               	.LFBB5:
+ 660 020a CF93      		push r28
+ 661 020c DF93      		push r29
+ 662               	/* prologue: function */
+ 663               	/* frame size = 0 */
+ 664               	/* stack size = 2 */
+ 665               	.L__stack_usage = 2
+ 538:main.c        **** 	{
+ 667               	.LM96:
+ 668 020e C0E0      		ldi r28,0
+ 541:main.c        **** 	}
+ 670               	.LM97:
+ 671 0210 D3E0      		ldi r29,lo8(3)
+ 672               	.L39:
+ 538:main.c        **** 	{
+ 674               	.LM98:
+ 675 0212 8091 0000 		lds r24,_snake+32
+ 676 0216 C817      		cp r28,r24
+ 677 0218 00F0      		brlo .L40
+ 678               	/* epilogue start */
+ 543:main.c        **** 
+ 680               	.LM99:
+ 681 021a DF91      		pop r29
+ 682 021c CF91      		pop r28
+ 683 021e 0895      		ret
+ 684               	.L40:
+ 540:main.c        **** 			_snake_colors + _snake.color);
+ 686               	.LM100:
+ 687 0220 EC2F      		mov r30,r28
+ 688 0222 F0E0      		ldi r31,0
+ 541:main.c        **** 	}
+ 690               	.LM101:
+ 691 0224 4091 0000 		lds r20,_snake+33
+ 692 0228 4D9F      		mul r20,r29
+ 693 022a A001      		movw r20,r0
+ 694 022c 1124      		clr __zero_reg__
+ 540:main.c        **** 			_snake_colors + _snake.color);
+ 696               	.LM102:
+ 697 022e 4050      		subi r20,lo8(-(_snake_colors))
+ 698 0230 5040      		sbci r21,hi8(-(_snake_colors))
+ 540:main.c        **** 			_snake_colors + _snake.color);
+ 700               	.LM103:
+ 701 0232 EE0F      		lsl r30
+ 702 0234 FF1F      		rol r31
+ 703 0236 E050      		subi r30,lo8(-(_snake))
+ 704 0238 F040      		sbci r31,hi8(-(_snake))
+ 540:main.c        **** 			_snake_colors + _snake.color);
+ 706               	.LM104:
+ 707 023a 6181      		ldd r22,Z+1
+ 708 023c 8081      		ld r24,Z
+ 709 023e 0E94 0000 		call led_pixel
+ 538:main.c        **** 	{
+ 711               	.LM105:
+ 712 0242 CF5F      		subi r28,lo8(-(1))
+ 713 0244 00C0      		rjmp .L39
+ 718               	.Lscope5:
+ 720               		.stabd	78,0,0
+ 723               	draw_food:
+ 724               		.stabd	46,0,0
+ 546:main.c        **** 	led_pixel(_food.x, _food.y, _snake_colors + _food.color);
+ 726               	.LM106:
+ 727               	.LFBB6:
+ 728               	/* prologue: function */
+ 729               	/* frame size = 0 */
+ 730               	/* stack size = 0 */
+ 731               	.L__stack_usage = 0
+ 547:main.c        **** }
+ 733               	.LM107:
+ 734 0246 E0E0      		ldi r30,lo8(_food)
+ 735 0248 F0E0      		ldi r31,hi8(_food)
+ 547:main.c        **** }
+ 737               	.LM108:
+ 738 024a 4281      		ldd r20,Z+2
+ 739 024c 83E0      		ldi r24,lo8(3)
+ 740 024e 489F      		mul r20,r24
+ 741 0250 A001      		movw r20,r0
+ 742 0252 1124      		clr __zero_reg__
+ 547:main.c        **** }
+ 744               	.LM109:
+ 745 0254 4050      		subi r20,lo8(-(_snake_colors))
+ 746 0256 5040      		sbci r21,hi8(-(_snake_colors))
+ 747 0258 6181      		ldd r22,Z+1
+ 748 025a 8081      		ld r24,Z
+ 749 025c 0C94 0000 		jmp led_pixel
+ 751               	.Lscope6:
+ 753               		.stabd	78,0,0
+ 756               	piece_undraw:
+ 757               		.stabd	46,0,0
+ 694:main.c        **** 	int8_t row, col;
+ 759               	.LM110:
+ 760               	.LFBB7:
+ 761 0260 CF92      		push r12
+ 762 0262 DF92      		push r13
+ 763 0264 EF92      		push r14
+ 764 0266 FF92      		push r15
+ 765 0268 0F93      		push r16
+ 766 026a 1F93      		push r17
+ 767 026c CF93      		push r28
+ 768 026e DF93      		push r29
+ 769               	/* prologue: function */
+ 770               	/* frame size = 0 */
+ 771               	/* stack size = 8 */
+ 772               	.L__stack_usage = 8
+ 698:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 774               	.LM111:
+ 775 0270 E091 0000 		lds r30,_piece+2
+ 698:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 777               	.LM112:
+ 778 0274 8091 0000 		lds r24,_piece+3
+ 698:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 780               	.LM113:
+ 781 0278 EE0F      		lsl r30
+ 782 027a FF0B      		sbc r31,r31
+ 783 027c 9BE0      		ldi r25,lo8(11)
+ 784 027e 899F      		mul r24,r25
+ 785 0280 E00D      		add r30,r0
+ 786 0282 F11D      		adc r31,r1
+ 787 0284 1124      		clr __zero_reg__
+ 788 0286 E050      		subi r30,lo8(-(_pieces))
+ 789 0288 F040      		sbci r31,hi8(-(_pieces))
+ 790 028a C080      		ld r12,Z
+ 791 028c D180      		ldd r13,Z+1
+ 792 028e 00E1      		ldi r16,lo8(16)
+ 793 0290 10E0      		ldi r17,0
+ 699:main.c        **** 	{
+ 795               	.LM114:
+ 796 0292 E12C      		mov r14,__zero_reg__
+ 797 0294 90E8      		ldi r25,lo8(-128)
+ 798 0296 F92E      		mov r15,r25
+ 697:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 800               	.LM115:
+ 801 0298 C0E0      		ldi r28,0
+ 697:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 803               	.LM116:
+ 804 029a D0E0      		ldi r29,0
+ 805               	.L45:
+ 701:main.c        **** 		{
+ 807               	.LM117:
+ 808 029c C601      		movw r24,r12
+ 809 029e 8E21      		and r24,r14
+ 810 02a0 9F21      		and r25,r15
+ 701:main.c        **** 		{
+ 812               	.LM118:
+ 813 02a2 892B      		or r24,r25
+ 814 02a4 01F0      		breq .L43
+ 703:main.c        **** 		}
+ 816               	.LM119:
+ 817 02a6 6091 0000 		lds r22,_piece+1
+ 818 02aa 6D0F      		add r22,r29
+ 819 02ac 8091 0000 		lds r24,_piece
+ 820 02b0 40E0      		ldi r20,lo8(black)
+ 821 02b2 50E0      		ldi r21,hi8(black)
+ 822 02b4 8C0F      		add r24,r28
+ 823 02b6 0E94 0000 		call led_pixel
+ 824               	.L43:
+ 706:main.c        **** 		{
+ 826               	.LM120:
+ 827 02ba CF5F      		subi r28,lo8(-(1))
+ 706:main.c        **** 		{
+ 829               	.LM121:
+ 830 02bc C430      		cpi r28,lo8(4)
+ 831 02be 01F4      		brne .L44
+ 709:main.c        **** 		}
+ 833               	.LM122:
+ 834 02c0 DF5F      		subi r29,lo8(-(1))
+ 708:main.c        **** 			++row;
+ 836               	.LM123:
+ 837 02c2 C0E0      		ldi r28,0
+ 838               	.L44:
+ 699:main.c        **** 	{
+ 840               	.LM124:
+ 841 02c4 F694      		lsr r15
+ 842 02c6 E794      		ror r14
+ 843 02c8 0150      		subi r16,1
+ 844 02ca 1109      		sbc r17,__zero_reg__
+ 699:main.c        **** 	{
+ 846               	.LM125:
+ 847 02cc 01F4      		brne .L45
+ 848               	/* epilogue start */
+ 712:main.c        **** 
+ 850               	.LM126:
+ 851 02ce DF91      		pop r29
+ 852 02d0 CF91      		pop r28
+ 853 02d2 1F91      		pop r17
+ 854 02d4 0F91      		pop r16
+ 855 02d6 FF90      		pop r15
+ 856 02d8 EF90      		pop r14
+ 857 02da DF90      		pop r13
+ 858 02dc CF90      		pop r12
+ 859 02de 0895      		ret
+ 867               	.Lscope7:
+ 869               		.stabd	78,0,0
+ 872               	piece_draw:
+ 873               		.stabd	46,0,0
+ 715:main.c        **** 	int8_t row, col;
+ 875               	.LM127:
+ 876               	.LFBB8:
+ 877 02e0 BF92      		push r11
+ 878 02e2 CF92      		push r12
+ 879 02e4 DF92      		push r13
+ 880 02e6 EF92      		push r14
+ 881 02e8 FF92      		push r15
+ 882 02ea 0F93      		push r16
+ 883 02ec 1F93      		push r17
+ 884 02ee CF93      		push r28
+ 885 02f0 DF93      		push r29
+ 886               	/* prologue: function */
+ 887               	/* frame size = 0 */
+ 888               	/* stack size = 9 */
+ 889               	.L__stack_usage = 9
+ 719:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 891               	.LM128:
+ 892 02f2 E091 0000 		lds r30,_piece+2
+ 719:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 894               	.LM129:
+ 895 02f6 8091 0000 		lds r24,_piece+3
+ 719:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 897               	.LM130:
+ 898 02fa EE0F      		lsl r30
+ 899 02fc FF0B      		sbc r31,r31
+ 900 02fe 9BE0      		ldi r25,lo8(11)
+ 901 0300 899F      		mul r24,r25
+ 902 0302 E00D      		add r30,r0
+ 903 0304 F11D      		adc r31,r1
+ 904 0306 1124      		clr __zero_reg__
+ 905 0308 E050      		subi r30,lo8(-(_pieces))
+ 906 030a F040      		sbci r31,hi8(-(_pieces))
+ 907 030c E080      		ld r14,Z
+ 908 030e F180      		ldd r15,Z+1
+ 909 0310 00E1      		ldi r16,lo8(16)
+ 910 0312 10E0      		ldi r17,0
+ 720:main.c        **** 	{
+ 912               	.LM131:
+ 913 0314 C12C      		mov r12,__zero_reg__
+ 914 0316 90E8      		ldi r25,lo8(-128)
+ 915 0318 D92E      		mov r13,r25
+ 718:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 917               	.LM132:
+ 918 031a C0E0      		ldi r28,0
+ 718:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 920               	.LM133:
+ 921 031c D0E0      		ldi r29,0
+ 724:main.c        **** 				&_pieces[_piece.type].color);
+ 923               	.LM134:
+ 924 031e 2BE0      		ldi r18,lo8(11)
+ 925 0320 B22E      		mov r11,r18
+ 926               	.L53:
+ 722:main.c        **** 		{
+ 928               	.LM135:
+ 929 0322 C701      		movw r24,r14
+ 930 0324 8C21      		and r24,r12
+ 931 0326 9D21      		and r25,r13
+ 722:main.c        **** 		{
+ 933               	.LM136:
+ 934 0328 892B      		or r24,r25
+ 935 032a 01F0      		breq .L51
+ 724:main.c        **** 				&_pieces[_piece.type].color);
+ 937               	.LM137:
+ 938 032c 4091 0000 		lds r20,_piece+3
+ 939 0330 B49E      		mul r11,r20
+ 940 0332 A001      		movw r20,r0
+ 941 0334 1124      		clr __zero_reg__
+ 942 0336 4050      		subi r20,lo8(-(_pieces+8))
+ 943 0338 5040      		sbci r21,hi8(-(_pieces+8))
+ 944 033a 6091 0000 		lds r22,_piece+1
+ 945 033e 6D0F      		add r22,r29
+ 946 0340 8091 0000 		lds r24,_piece
+ 947 0344 8C0F      		add r24,r28
+ 948 0346 0E94 0000 		call led_pixel
+ 949               	.L51:
+ 728:main.c        **** 		{
+ 951               	.LM138:
+ 952 034a CF5F      		subi r28,lo8(-(1))
+ 728:main.c        **** 		{
+ 954               	.LM139:
+ 955 034c C430      		cpi r28,lo8(4)
+ 956 034e 01F4      		brne .L52
+ 731:main.c        **** 		}
+ 958               	.LM140:
+ 959 0350 DF5F      		subi r29,lo8(-(1))
+ 730:main.c        **** 			++row;
+ 961               	.LM141:
+ 962 0352 C0E0      		ldi r28,0
+ 963               	.L52:
+ 720:main.c        **** 	{
+ 965               	.LM142:
+ 966 0354 D694      		lsr r13
+ 967 0356 C794      		ror r12
+ 968 0358 0150      		subi r16,1
+ 969 035a 1109      		sbc r17,__zero_reg__
+ 720:main.c        **** 	{
+ 971               	.LM143:
+ 972 035c 01F4      		brne .L53
+ 973               	/* epilogue start */
+ 734:main.c        **** 
+ 975               	.LM144:
+ 976 035e DF91      		pop r29
+ 977 0360 CF91      		pop r28
+ 978 0362 1F91      		pop r17
+ 979 0364 0F91      		pop r16
+ 980 0366 FF90      		pop r15
+ 981 0368 EF90      		pop r14
+ 982 036a DF90      		pop r13
+ 983 036c CF90      		pop r12
+ 984 036e BF90      		pop r11
+ 985 0370 0895      		ret
+ 993               	.Lscope8:
+ 995               		.stabd	78,0,0
+ 998               	snake_advance:
+ 999               		.stabd	46,0,0
+ 667:main.c        **** 	switch(_dir)
+ 1001               	.LM145:
+ 1002               	.LFBB9:
+ 1003               	/* prologue: function */
+ 1004               	/* frame size = 0 */
+ 1005               	/* stack size = 0 */
+ 1006               	.L__stack_usage = 0
+ 668:main.c        **** 	{
+ 1008               	.LM146:
+ 1009 0372 8091 0000 		lds r24,_dir
+ 1010 0376 8330      		cpi r24,lo8(3)
+ 1011 0378 01F0      		breq .L59
+ 1012 037a 00F4      		brsh .L60
+ 1013 037c 8130      		cpi r24,lo8(1)
+ 1014 037e 01F0      		breq .L61
+ 1015 0380 8230      		cpi r24,lo8(2)
+ 1016 0382 01F0      		breq .L62
+ 1017 0384 0895      		ret
+ 1018               	.L60:
+ 1019 0386 8430      		cpi r24,lo8(4)
+ 1020 0388 01F0      		breq .L64
+ 1021 038a 0895      		ret
+ 1022               	.L61:
+ 1023               	.LBB26:
+ 1024               	.LBB27:
+ 671:main.c        **** 		break;
+ 1026               	.LM147:
+ 1027 038c E091 0000 		lds r30,_snake+32
+ 671:main.c        **** 		break;
+ 1029               	.LM148:
+ 1030 0390 E150      		subi r30,1
+ 1031 0392 FF0B      		sbc r31,r31
+ 671:main.c        **** 		break;
+ 1033               	.LM149:
+ 1034 0394 EE0F      		lsl r30
+ 1035 0396 FF1F      		rol r31
+ 1036 0398 E050      		subi r30,lo8(-(_snake))
+ 1037 039a F040      		sbci r31,hi8(-(_snake))
+ 1038 039c 8181      		ldd r24,Z+1
+ 1039 039e 8150      		subi r24,lo8(-(-1))
+ 1040               	.L65:
+ 1041               	.LBE27:
+ 1042               	.LBE26:
+ 675:main.c        **** 		break;
+ 1044               	.LM150:
+ 1045 03a0 8183      		std Z+1,r24
+ 676:main.c        **** 
+ 1047               	.LM151:
+ 1048 03a2 0895      		ret
+ 1049               	.L62:
+ 675:main.c        **** 		break;
+ 1051               	.LM152:
+ 1052 03a4 E091 0000 		lds r30,_snake+32
+ 675:main.c        **** 		break;
+ 1054               	.LM153:
+ 1055 03a8 E150      		subi r30,1
+ 1056 03aa FF0B      		sbc r31,r31
+ 675:main.c        **** 		break;
+ 1058               	.LM154:
+ 1059 03ac EE0F      		lsl r30
+ 1060 03ae FF1F      		rol r31
+ 1061 03b0 E050      		subi r30,lo8(-(_snake))
+ 1062 03b2 F040      		sbci r31,hi8(-(_snake))
+ 1063 03b4 8181      		ldd r24,Z+1
+ 1064 03b6 8F5F      		subi r24,lo8(-(1))
+ 1065 03b8 00C0      		rjmp .L65
+ 1066               	.L59:
+ 679:main.c        **** 		break;
+ 1068               	.LM155:
+ 1069 03ba E091 0000 		lds r30,_snake+32
+ 679:main.c        **** 		break;
+ 1071               	.LM156:
+ 1072 03be E150      		subi r30,1
+ 1073 03c0 FF0B      		sbc r31,r31
+ 679:main.c        **** 		break;
+ 1075               	.LM157:
+ 1076 03c2 EE0F      		lsl r30
+ 1077 03c4 FF1F      		rol r31
+ 1078 03c6 E050      		subi r30,lo8(-(_snake))
+ 1079 03c8 F040      		sbci r31,hi8(-(_snake))
+ 1080 03ca 8081      		ld r24,Z
+ 1081 03cc 8150      		subi r24,lo8(-(-1))
+ 1082               	.L66:
+ 683:main.c        **** 		break;
+ 1084               	.LM158:
+ 1085 03ce 8083      		st Z,r24
+ 1086               	/* epilogue start */
+ 689:main.c        **** 
+ 1088               	.LM159:
+ 1089 03d0 0895      		ret
+ 1090               	.L64:
+ 683:main.c        **** 		break;
+ 1092               	.LM160:
+ 1093 03d2 E091 0000 		lds r30,_snake+32
+ 683:main.c        **** 		break;
+ 1095               	.LM161:
+ 1096 03d6 E150      		subi r30,1
+ 1097 03d8 FF0B      		sbc r31,r31
+ 683:main.c        **** 		break;
+ 1099               	.LM162:
+ 1100 03da EE0F      		lsl r30
+ 1101 03dc FF1F      		rol r31
+ 1102 03de E050      		subi r30,lo8(-(_snake))
+ 1103 03e0 F040      		sbci r31,hi8(-(_snake))
+ 1104 03e2 8081      		ld r24,Z
+ 1105 03e4 8F5F      		subi r24,lo8(-(1))
+ 1106 03e6 00C0      		rjmp .L66
+ 1108               	.Lscope9:
+ 1110               		.stabd	78,0,0
+ 1113               	led_clear.constprop.0:
+ 1114               		.stabd	46,0,0
+ 1116               	.Ltext3:
+  93:ws2812.c      **** 
+  94:ws2812.c      **** static void led_clear(color_t *c)
+ 1118               	.LM163:
+ 1119               	.LFBB10:
+ 1120               	/* prologue: function */
+ 1121               	/* frame size = 0 */
+ 1122               	/* stack size = 0 */
+ 1123               	.L__stack_usage = 0
+  95:ws2812.c      **** {
+  96:ws2812.c      **** 	uint16_t i;
+  97:ws2812.c      **** 	for(i = 0; i < 3 * LED_PIXELS; ++i)
+  98:ws2812.c      **** 	{
+  99:ws2812.c      **** 		_pixels[i] = c->G;
+ 1125               	.LM164:
+ 1126 03e8 2091 0000 		lds r18,black+1
+ 100:ws2812.c      **** 		_pixels[++i] = c->R;
+ 1128               	.LM165:
+ 1129 03ec 9091 0000 		lds r25,black
+ 101:ws2812.c      **** 		_pixels[++i] = c->B;
+ 1131               	.LM166:
+ 1132 03f0 8091 0000 		lds r24,black+2
+ 1133 03f4 E0E0      		ldi r30,lo8(_pixels)
+ 1134 03f6 F0E0      		ldi r31,hi8(_pixels)
+ 1135               	.L68:
+  99:ws2812.c      **** 		_pixels[++i] = c->R;
+ 1137               	.LM167:
+ 1138 03f8 2083      		st Z,r18
+ 100:ws2812.c      **** 		_pixels[++i] = c->R;
+ 1140               	.LM168:
+ 1141 03fa 9183      		std Z+1,r25
+ 1143               	.LM169:
+ 1144 03fc 8283      		std Z+2,r24
+ 1145 03fe 3396      		adiw r30,3
+  97:ws2812.c      **** 	{
+ 1147               	.LM170:
+ 1148 0400 30E0      		ldi r19,hi8(_pixels+768)
+ 1149 0402 E030      		cpi r30,lo8(_pixels+768)
+ 1150 0404 F307      		cpc r31,r19
+ 1151 0406 01F4      		brne .L68
+ 1152               	/* epilogue start */
+ 102:ws2812.c      **** 	}
+ 103:ws2812.c      **** }
+ 1154               	.LM171:
+ 1155 0408 0895      		ret
+ 1157               	.Lscope10:
+ 1159               		.stabd	78,0,0
+ 1162               	snake_init:
+ 1163               		.stabd	46,0,0
+ 1165               	.Ltext4:
+ 578:main.c        **** 	uint8_t i;
+ 1167               	.LM172:
+ 1168               	.LFBB11:
+ 1169 040a CF93      		push r28
+ 1170 040c DF93      		push r29
+ 1171               	/* prologue: function */
+ 1172               	/* frame size = 0 */
+ 1173               	/* stack size = 2 */
+ 1174               	.L__stack_usage = 2
+ 580:main.c        **** 	_snake_update_ticks = SNAKE_MS_UPDATE;
+ 1176               	.LM173:
+ 1177 040e 1092 0000 		sts _dir,__zero_reg__
+ 581:main.c        **** 	led_clear(&black);
+ 1179               	.LM174:
+ 1180 0412 80EF      		ldi r24,lo8(-16)
+ 1181 0414 90E0      		ldi r25,0
+ 1182 0416 9093 0000 		sts _snake_update_ticks+1,r25
+ 1183 041a 8093 0000 		sts _snake_update_ticks,r24
+ 582:main.c        **** 	_snake.len = SNAKE_INITIAL_LEN;
+ 1185               	.LM175:
+ 1186 041e 0E94 0000 		call led_clear.constprop.0
+ 583:main.c        **** 	for(i = 0; i < SNAKE_INITIAL_LEN; ++i)
+ 1188               	.LM176:
+ 1189 0422 C0E0      		ldi r28,lo8(_snake)
+ 1190 0424 D0E0      		ldi r29,hi8(_snake)
+ 1191 0426 84E0      		ldi r24,lo8(4)
+ 1192 0428 88A3      		std Y+32,r24
+ 586:main.c        **** 		_snake.blocks[i].y = 0;
+ 1194               	.LM177:
+ 1195 042a 1882      		st Y,__zero_reg__
+ 587:main.c        **** 	}
+ 1197               	.LM178:
+ 1198 042c 1982      		std Y+1,__zero_reg__
+ 586:main.c        **** 		_snake.blocks[i].y = 0;
+ 1200               	.LM179:
+ 1201 042e 81E0      		ldi r24,lo8(1)
+ 1202 0430 8A83      		std Y+2,r24
+ 587:main.c        **** 	}
+ 1204               	.LM180:
+ 1205 0432 1B82      		std Y+3,__zero_reg__
+ 586:main.c        **** 		_snake.blocks[i].y = 0;
+ 1207               	.LM181:
+ 1208 0434 82E0      		ldi r24,lo8(2)
+ 1209 0436 8C83      		std Y+4,r24
+ 587:main.c        **** 	}
+ 1211               	.LM182:
+ 1212 0438 1D82      		std Y+5,__zero_reg__
+ 586:main.c        **** 		_snake.blocks[i].y = 0;
+ 1214               	.LM183:
+ 1215 043a 83E0      		ldi r24,lo8(3)
+ 1216 043c 8E83      		std Y+6,r24
+ 587:main.c        **** 	}
+ 1218               	.LM184:
+ 1219 043e 1F82      		std Y+7,__zero_reg__
+ 590:main.c        **** 	random_food();
+ 1221               	.LM185:
+ 1222 0440 0E94 0000 		call rand
+ 590:main.c        **** 	random_food();
+ 1224               	.LM186:
+ 1225 0444 67E0      		ldi r22,lo8(7)
+ 1226 0446 70E0      		ldi r23,0
+ 1227 0448 0E94 0000 		call __divmodhi4
+ 590:main.c        **** 	random_food();
+ 1229               	.LM187:
+ 1230 044c 89A3      		std Y+33,r24
+ 591:main.c        **** 	draw_snake();
+ 1232               	.LM188:
+ 1233 044e 0E94 0000 		call random_food
+ 592:main.c        **** 	draw_food();
+ 1235               	.LM189:
+ 1236 0452 0E94 0000 		call draw_snake
+ 1237               	/* epilogue start */
+ 594:main.c        **** 
+ 1239               	.LM190:
+ 1240 0456 DF91      		pop r29
+ 1241 0458 CF91      		pop r28
+ 593:main.c        **** }
+ 1243               	.LM191:
+ 1244 045a 0C94 0000 		jmp draw_food
+ 1246               	.Lscope11:
+ 1248               		.stabd	78,0,0
+ 1253               	ws2812.constprop.0:
+ 1254               		.stabd	46,0,0
+ 1256               	.Ltext5:
+ 104:ws2812.c      **** 
+ 105:ws2812.c      **** static void ws2812(uint8_t *pixels, uint16_t count, uint8_t pin)
+ 1258               	.LM192:
+ 1259               	.LFBB12:
+ 1260               	/* prologue: function */
+ 1261               	/* frame size = 0 */
+ 1262               	/* stack size = 0 */
+ 1263               	.L__stack_usage = 0
+ 1264 045e 9C01      		movw r18,r24
+ 106:ws2812.c      **** {
+ 107:ws2812.c      **** 	uint8_t b, c, h, l, s;
+ 108:ws2812.c      **** 	h = (1 << pin);
+ 1266               	.LM193:
+ 1267 0460 81E0      		ldi r24,lo8(1)
+ 1268 0462 90E0      		ldi r25,0
+ 1269 0464 00C0      		rjmp 2f
+ 1270               		1:
+ 1271 0466 880F      		lsl r24
+ 1272               		2:
+ 1273 0468 6A95      		dec r22
+ 1274 046a 02F4      		brpl 1b
+ 109:ws2812.c      **** 	WS2812_DIR |= h;
+ 1276               	.LM194:
+ 1277 046c 94B1      		in r25,0x4
+ 1278 046e 982B      		or r25,r24
+ 1279 0470 94B9      		out 0x4,r25
+ 110:ws2812.c      **** 	l = ~h & WS2812_OUT;
+ 1281               	.LM195:
+ 1282 0472 45B1      		in r20,0x5
+ 1284               	.LM196:
+ 1285 0474 982F      		mov r25,r24
+ 1286 0476 9095      		com r25
+ 1287 0478 9423      		and r25,r20
+ 111:ws2812.c      **** 	h |= WS2812_OUT;
+ 1289               	.LM197:
+ 1290 047a 45B1      		in r20,0x5
+ 1292               	.LM198:
+ 1293 047c 842B      		or r24,r20
+ 112:ws2812.c      **** 	s = SREG;
+ 1295               	.LM199:
+ 1296 047e 4FB7      		in r20,__SREG__
+ 113:ws2812.c      **** 	asm volatile ("cli");
+ 1298               	.LM200:
+ 1299               	/* #APP */
+ 1300               	 ;  113 "ws2812.c" 1
+ 1301 0480 F894      		cli
+ 1302               	 ;  0 "" 2
+ 1303               	/* #NOAPP */
+ 1304 0482 B901      		movw r22,r18
+ 1305 0484 6058      		subi r22,-128
+ 1306 0486 7E4F      		sbci r23,-2
+ 1307               	.L72:
+ 114:ws2812.c      **** 	while(count--)
+ 1309               	.LM201:
+ 1310 0488 2617      		cp r18,r22
+ 1311 048a 3707      		cpc r19,r23
+ 1312 048c 01F4      		brne .L73
+ 115:ws2812.c      **** 	{
+ 116:ws2812.c      **** 		b = *pixels++;
+ 117:ws2812.c      **** 		asm volatile
+ 118:ws2812.c      **** 		(
+ 119:ws2812.c      **** 			"       ldi   %0,8  \n\t"
+ 120:ws2812.c      **** 			"loop%=:            \n\t"
+ 121:ws2812.c      **** 			"       out   %2,%3 \n\t"
+ 122:ws2812.c      **** #if (W1_NOPS & 1)
+ 123:ws2812.c      **** W_NOP1
+ 124:ws2812.c      **** #endif
+ 125:ws2812.c      **** #if (W1_NOPS & 2)
+ 126:ws2812.c      **** W_NOP2
+ 127:ws2812.c      **** #endif
+ 128:ws2812.c      **** #if (W1_NOPS & 4)
+ 129:ws2812.c      **** W_NOP4
+ 130:ws2812.c      **** #endif
+ 131:ws2812.c      **** #if (W1_NOPS & 8)
+ 132:ws2812.c      **** W_NOP8
+ 133:ws2812.c      **** #endif
+ 134:ws2812.c      **** #if (W1_NOPS & 16)
+ 135:ws2812.c      **** W_NOP16
+ 136:ws2812.c      **** #endif
+ 137:ws2812.c      **** 			"       sbrs  %1,7  \n\t"
+ 138:ws2812.c      **** 			"       out   %2,%4 \n\t"
+ 139:ws2812.c      **** 			"       lsl   %1    \n\t"
+ 140:ws2812.c      **** #if (W2_NOPS & 1)
+ 141:ws2812.c      **** W_NOP1
+ 142:ws2812.c      **** #endif
+ 143:ws2812.c      **** #if (W2_NOPS & 2)
+ 144:ws2812.c      **** W_NOP2
+ 145:ws2812.c      **** #endif
+ 146:ws2812.c      **** #if (W2_NOPS & 4)
+ 147:ws2812.c      **** W_NOP4
+ 148:ws2812.c      **** #endif
+ 149:ws2812.c      **** #if (W2_NOPS & 8)
+ 150:ws2812.c      **** W_NOP8
+ 151:ws2812.c      **** #endif
+ 152:ws2812.c      **** #if (W2_NOPS & 16)
+ 153:ws2812.c      **** W_NOP16
+ 154:ws2812.c      **** #endif
+ 155:ws2812.c      **** 			"       out   %2,%4 \n\t"
+ 156:ws2812.c      **** #if (W3_NOPS & 1)
+ 157:ws2812.c      **** W_NOP1
+ 158:ws2812.c      **** #endif
+ 159:ws2812.c      **** #if (W3_NOPS & 2)
+ 160:ws2812.c      **** W_NOP2
+ 161:ws2812.c      **** #endif
+ 162:ws2812.c      **** #if (W3_NOPS & 4)
+ 163:ws2812.c      **** W_NOP4
+ 164:ws2812.c      **** #endif
+ 165:ws2812.c      **** #if (W3_NOPS & 8)
+ 166:ws2812.c      **** W_NOP8
+ 167:ws2812.c      **** #endif
+ 168:ws2812.c      **** #if (W3_NOPS & 16)
+ 169:ws2812.c      **** W_NOP16
+ 170:ws2812.c      **** #endif
+ 171:ws2812.c      **** 			"       dec   %0    \n\t"
+ 172:ws2812.c      **** 			"       brne  loop%=\n\t"
+ 173:ws2812.c      **** 			:	"=&d" (c)
+ 174:ws2812.c      **** 			:	"r" (b),
+ 175:ws2812.c      **** 				"I" (_SFR_IO_ADDR(WS2812_OUT)),
+ 176:ws2812.c      **** 				"r" (h),
+ 177:ws2812.c      **** 				"r" (l)
+ 178:ws2812.c      **** 		);
+ 179:ws2812.c      **** 	}
+ 180:ws2812.c      **** 
+ 181:ws2812.c      **** 	SREG = s;
+ 1314               	.LM202:
+ 1315 048e 4FBF      		out __SREG__,r20
+ 1316               	/* epilogue start */
+ 182:ws2812.c      **** }
+ 1318               	.LM203:
+ 1319 0490 0895      		ret
+ 1320               	.L73:
+ 117:ws2812.c      **** 		(
+ 1322               	.LM204:
+ 1323 0492 F901      		movw r30,r18
+ 1324 0494 5191      		ld r21,Z+
+ 1325 0496 9F01      		movw r18,r30
+ 1326               	/* #APP */
+ 1327               	 ;  117 "ws2812.c" 1
+ 1328 0498 E8E0      		       ldi   r30,8  
+ 1329               		loop675:            
+ 1330 049a 85B9      		       out   5,r24 
+ 1331 049c 0000      		nop      
+ 1332 049e 00C0      		rjmp .+0 
+ 1333 04a0 57FF      		       sbrs  r21,7  
+ 1334 04a2 95B9      		       out   5,r25 
+ 1335 04a4 550F      		       lsl   r21    
+ 1336 04a6 0000      		nop      
+ 1337 04a8 00C0      		rjmp .+0 
+ 1338 04aa 00C0      		rjmp .+0 
+ 1339 04ac 00C0      		rjmp .+0 
+ 1340 04ae 95B9      		       out   5,r25 
+ 1341 04b0 00C0      		rjmp .+0 
+ 1342 04b2 EA95      		       dec   r30    
+ 1343 04b4 01F4      		       brne  loop675
+ 1344               		
+ 1345               	 ;  0 "" 2
+ 1346               	/* #NOAPP */
+ 1347 04b6 00C0      		rjmp .L72
+ 1353               	.Lscope12:
+ 1355               		.stabd	78,0,0
+ 1358               	led_update:
+ 1359               		.stabd	46,0,0
+  75:ws2812.c      **** 	ws2812(_pixels, 128 * 3, 1);
+ 1361               	.LM205:
+ 1362               	.LFBB13:
+ 1363               	/* prologue: function */
+ 1364               	/* frame size = 0 */
+ 1365               	/* stack size = 0 */
+ 1366               	.L__stack_usage = 0
+  76:ws2812.c      **** 	ws2812(_pixels + 128 * 3, 128 * 3, 2);
+ 1368               	.LM206:
+ 1369 04b8 61E0      		ldi r22,lo8(1)
+ 1370 04ba 80E0      		ldi r24,lo8(_pixels)
+ 1371 04bc 90E0      		ldi r25,hi8(_pixels)
+ 1372 04be 0E94 0000 		call ws2812.constprop.0
+  77:ws2812.c      **** }
+ 1374               	.LM207:
+ 1375 04c2 62E0      		ldi r22,lo8(2)
+ 1376 04c4 80E0      		ldi r24,lo8(_pixels+384)
+ 1377 04c6 90E0      		ldi r25,hi8(_pixels+384)
+ 1378 04c8 0C94 0000 		jmp ws2812.constprop.0
+ 1380               	.Lscope13:
+ 1382               		.stabd	78,0,0
+ 1385               	field_clear:
+ 1386               		.stabd	46,0,0
+ 1388               	.Ltext6:
+ 885:main.c        **** 		}
+ 886:main.c        **** 	}
+ 887:main.c        **** 
+ 888:main.c        **** 	return -1;
+ 889:main.c        **** }
+ 890:main.c        **** 
+ 891:main.c        **** static void field_clear(void)
+ 892:main.c        **** {
+ 1390               	.LM208:
+ 1391               	.LFBB14:
+ 1392               	/* prologue: function */
+ 1393               	/* frame size = 0 */
+ 1394               	/* stack size = 0 */
+ 1395               	.L__stack_usage = 0
+ 1396 04cc E0E0      		ldi r30,lo8(_field)
+ 1397 04ce F0E0      		ldi r31,hi8(_field)
+ 1398               	.L76:
+ 893:main.c        **** 	uint16_t i;
+ 894:main.c        **** 	for(i = 0; i < LED_SIZE * LED_SIZE; ++i)
+ 895:main.c        **** 	{
+ 896:main.c        **** 		_field[i] = 0;
+ 1400               	.LM209:
+ 1401 04d0 1192      		st Z+,__zero_reg__
+ 894:main.c        **** 	{
+ 1403               	.LM210:
+ 1404 04d2 80E0      		ldi r24,hi8(_field+256)
+ 1405 04d4 E030      		cpi r30,lo8(_field+256)
+ 1406 04d6 F807      		cpc r31,r24
+ 1407 04d8 01F4      		brne .L76
+ 897:main.c        **** 	}
+ 898:main.c        **** 
+ 899:main.c        **** 	led_clear(&black);
+ 1409               	.LM211:
+ 1410 04da 0E94 0000 		call led_clear.constprop.0
+ 900:main.c        **** 	led_update();
+ 1412               	.LM212:
+ 1413 04de 0C94 0000 		jmp led_update
+ 1415               	.Lscope14:
+ 1417               		.stabd	78,0,0
+ 1421               	img_value:
+ 1422               		.stabd	46,0,0
+ 500:main.c        **** 	color_t fg;
+ 1424               	.LM213:
+ 1425               	.LFBB15:
+ 1426 04e2 9F92      		push r9
+ 1427 04e4 AF92      		push r10
+ 1428 04e6 BF92      		push r11
+ 1429 04e8 CF92      		push r12
+ 1430 04ea DF92      		push r13
+ 1431 04ec EF92      		push r14
+ 1432 04ee FF92      		push r15
+ 1433 04f0 0F93      		push r16
+ 1434 04f2 1F93      		push r17
+ 1435 04f4 CF93      		push r28
+ 1436 04f6 DF93      		push r29
+ 1437 04f8 00D0      		rcall .
+ 1438 04fa 0F92      		push __tmp_reg__
+ 1439 04fc CDB7      		in r28,__SP_L__
+ 1440 04fe DEB7      		in r29,__SP_H__
+ 1441               	/* prologue: function */
+ 1442               	/* frame size = 3 */
+ 1443               	/* stack size = 14 */
+ 1444               	.L__stack_usage = 14
+ 500:main.c        **** 	color_t fg;
+ 1446               	.LM214:
+ 1447 0500 30E0      		ldi r19,0
+ 1448 0502 20E0      		ldi r18,0
+ 503:main.c        **** 	{
+ 1450               	.LM215:
+ 1451 0504 00E0      		ldi r16,0
+ 505:main.c        **** 		{
+ 1453               	.LM216:
+ 1454 0506 682F      		mov r22,r24
+ 1455 0508 70E0      		ldi r23,0
+ 1456               	.L81:
+ 1457 050a A901      		movw r20,r18
+ 1458 050c 4D5C      		subi r20,-51
+ 1459 050e 5F4F      		sbci r21,-1
+ 505:main.c        **** 		{
+ 1461               	.LM217:
+ 1462 0510 8217      		cp r24,r18
+ 1463 0512 00F0      		brlo .L79
+ 505:main.c        **** 		{
+ 1465               	.LM218:
+ 1466 0514 4617      		cp r20,r22
+ 1467 0516 5707      		cpc r21,r23
+ 1468 0518 04F4      		brge .L80
+ 1469               	.L79:
+ 503:main.c        **** 	{
+ 1471               	.LM219:
+ 1472 051a 0F5F      		subi r16,lo8(-(1))
+ 1473 051c 9A01      		movw r18,r20
+ 503:main.c        **** 	{
+ 1475               	.LM220:
+ 1476 051e 4F3F      		cpi r20,-1
+ 1477 0520 5105      		cpc r21,__zero_reg__
+ 1478 0522 01F4      		brne .L81
+ 515:main.c        **** 	}
+ 1480               	.LM221:
+ 1481 0524 04E0      		ldi r16,lo8(4)
+ 1482               	.L80:
+ 518:main.c        **** 	if(v < 128)
+ 1484               	.LM222:
+ 1485 0526 1B82      		std Y+3,__zero_reg__
+ 519:main.c        **** 	{
+ 1487               	.LM223:
+ 1488 0528 87FD      		sbrc r24,7
+ 1489 052a 00C0      		rjmp .L82
+ 521:main.c        **** 		fg.G = v;
+ 1491               	.LM224:
+ 1492 052c 9FEF      		ldi r25,lo8(-1)
+ 1493 052e 9983      		std Y+1,r25
+ 1494               	.L97:
+ 527:main.c        **** 	}
+ 1496               	.LM225:
+ 1497 0530 8A83      		std Y+2,r24
+ 1498               	.LBB32:
+ 1499               	.LBB33:
+ 479:main.c        **** 	for(y = 0; y < LED_SIZE; ++y)
+ 1501               	.LM226:
+ 1502 0532 0E94 0000 		call led_clear.constprop.0
+ 1503               	.LBE33:
+ 1504               	.LBE32:
+ 530:main.c        **** }
+ 1506               	.LM227:
+ 1507 0536 80E2      		ldi r24,lo8(32)
+ 1508 0538 089F      		mul r16,r24
+ 1509 053a 8001      		movw r16,r0
+ 1510 053c 1124      		clr __zero_reg__
+ 530:main.c        **** }
+ 1512               	.LM228:
+ 1513 053e 0050      		subi r16,lo8(-(img))
+ 1514 0540 1040      		sbci r17,hi8(-(img))
+ 1515               	.LBB38:
+ 1516               	.LBB36:
+ 480:main.c        **** 	{
+ 1518               	.LM229:
+ 1519 0542 D12C      		mov r13,__zero_reg__
+ 1520               	.L84:
+ 1521 0544 5801      		movw r10,r16
+ 1522 0546 FFEF      		ldi r31,-1
+ 1523 0548 AF1A      		sub r10,r31
+ 1524 054a BF0A      		sbc r11,r31
+ 1525               	.LBE36:
+ 1526               	.LBE38:
+ 515:main.c        **** 	}
+ 1528               	.LM230:
+ 1529 054c F12C      		mov r15,__zero_reg__
+ 1530 054e E12C      		mov r14,__zero_reg__
+ 1531               	.L87:
+ 1532 0550 CE2C      		mov r12,r14
+ 1533               	.LBB39:
+ 1534               	.LBB37:
+ 1535               	.LBB34:
+ 484:main.c        **** 			{
+ 1537               	.LM231:
+ 1538 0552 F801      		movw r30,r16
+ 1539               	/* #APP */
+ 1540               	 ;  484 "main.c" 1
+ 1541 0554 8491      		lpm r24, Z
+ 1542               		
+ 1543               	 ;  0 "" 2
+ 1544               	/* #NOAPP */
+ 1545               	.LBE34:
+ 484:main.c        **** 			{
+ 1547               	.LM232:
+ 1548 0556 9E2C      		mov r9,r14
+ 484:main.c        **** 			{
+ 1550               	.LM233:
+ 1551 0558 90E0      		ldi r25,0
+ 484:main.c        **** 			{
+ 1553               	.LM234:
+ 1554 055a 0E2C      		mov r0,r14
+ 1555 055c 00C0      		rjmp 2f
+ 1556               		1:
+ 1557 055e 9595      		asr r25
+ 1558 0560 8795      		ror r24
+ 1559               		2:
+ 1560 0562 0A94      		dec r0
+ 1561 0564 02F4      		brpl 1b
+ 484:main.c        **** 			{
+ 1563               	.LM235:
+ 1564 0566 80FF      		sbrs r24,0
+ 1565 0568 00C0      		rjmp .L85
+ 486:main.c        **** 			}
+ 1567               	.LM236:
+ 1568 056a AE01      		movw r20,r28
+ 1569 056c 4F5F      		subi r20,-1
+ 1570 056e 5F4F      		sbci r21,-1
+ 1571 0570 6E2D      		mov r22,r14
+ 1572 0572 8D2D      		mov r24,r13
+ 1573 0574 0E94 0000 		call led_pixel
+ 1574               	.L85:
+ 1575               	.LBB35:
+ 489:main.c        **** 			{
+ 1577               	.LM237:
+ 1578 0578 F501      		movw r30,r10
+ 1579               	/* #APP */
+ 1580               	 ;  489 "main.c" 1
+ 1581 057a 8491      		lpm r24, Z
+ 1582               		
+ 1583               	 ;  0 "" 2
+ 1584               	/* #NOAPP */
+ 1585               	.LBE35:
+ 1586 057c 90E0      		ldi r25,0
+ 489:main.c        **** 			{
+ 1588               	.LM238:
+ 1589 057e 00C0      		rjmp 2f
+ 1590               		1:
+ 1591 0580 9595      		asr r25
+ 1592 0582 8795      		ror r24
+ 1593               		2:
+ 1594 0584 9A94      		dec r9
+ 1595 0586 02F4      		brpl 1b
+ 489:main.c        **** 			{
+ 1597               	.LM239:
+ 1598 0588 80FF      		sbrs r24,0
+ 1599 058a 00C0      		rjmp .L86
+ 491:main.c        **** 			}
+ 1601               	.LM240:
+ 1602 058c 68E0      		ldi r22,lo8(8)
+ 1603 058e 6C0D      		add r22,r12
+ 1604 0590 AE01      		movw r20,r28
+ 1605 0592 4F5F      		subi r20,-1
+ 1606 0594 5F4F      		sbci r21,-1
+ 1607 0596 8D2D      		mov r24,r13
+ 1608 0598 0E94 0000 		call led_pixel
+ 1609               	.L86:
+ 1610 059c FFEF      		ldi r31,-1
+ 1611 059e EF1A      		sub r14,r31
+ 1612 05a0 FF0A      		sbc r15,r31
+ 482:main.c        **** 		{
+ 1614               	.LM241:
+ 1615 05a2 88E0      		ldi r24,8
+ 1616 05a4 E816      		cp r14,r24
+ 1617 05a6 F104      		cpc r15,__zero_reg__
+ 1618 05a8 01F4      		brne .L87
+ 480:main.c        **** 	{
+ 1620               	.LM242:
+ 1621 05aa D394      		inc r13
+ 1622 05ac 0E5F      		subi r16,-2
+ 1623 05ae 1F4F      		sbci r17,-1
+ 480:main.c        **** 	{
+ 1625               	.LM243:
+ 1626 05b0 E0E1      		ldi r30,lo8(16)
+ 1627 05b2 DE12      		cpse r13,r30
+ 1628 05b4 00C0      		rjmp .L84
+ 496:main.c        **** }
+ 1630               	.LM244:
+ 1631 05b6 0E94 0000 		call led_update
+ 1632               	/* epilogue start */
+ 1633               	.LBE37:
+ 1634               	.LBE39:
+ 531:main.c        **** 
+ 1636               	.LM245:
+ 1637 05ba 0F90      		pop __tmp_reg__
+ 1638 05bc 0F90      		pop __tmp_reg__
+ 1639 05be 0F90      		pop __tmp_reg__
+ 1640 05c0 DF91      		pop r29
+ 1641 05c2 CF91      		pop r28
+ 1642 05c4 1F91      		pop r17
+ 1643 05c6 0F91      		pop r16
+ 1644 05c8 FF90      		pop r15
+ 1645 05ca EF90      		pop r14
+ 1646 05cc DF90      		pop r13
+ 1647 05ce CF90      		pop r12
+ 1648 05d0 BF90      		pop r11
+ 1649 05d2 AF90      		pop r10
+ 1650 05d4 9F90      		pop r9
+ 1651 05d6 0895      		ret
+ 1652               	.L82:
+ 526:main.c        **** 		fg.G = 255;
+ 1654               	.LM246:
+ 1655 05d8 8095      		com r24
+ 526:main.c        **** 		fg.G = 255;
+ 1657               	.LM247:
+ 1658 05da 8983      		std Y+1,r24
+ 527:main.c        **** 	}
+ 1660               	.LM248:
+ 1661 05dc 8FEF      		ldi r24,lo8(-1)
+ 1662 05de 00C0      		rjmp .L97
+ 1677               	.Lscope15:
+ 1679               		.stabd	78,0,0
+ 1682               	.global	uart_tx
+ 1684               	uart_tx:
+ 1685               		.stabd	46,0,0
+ 194:main.c        **** 	while(!(UCSR0A & (1 << UDRE0))) ;
+ 1687               	.LM249:
+ 1688               	.LFBB16:
+ 1689               	/* prologue: function */
+ 1690               	/* frame size = 0 */
+ 1691               	/* stack size = 0 */
+ 1692               	.L__stack_usage = 0
+ 1693               	.L99:
+ 195:main.c        **** 	UDR0 = c;
+ 1695               	.LM250:
+ 1696 05e0 9091 C000 		lds r25,192
+ 195:main.c        **** 	UDR0 = c;
+ 1698               	.LM251:
+ 1699 05e4 95FF      		sbrs r25,5
+ 1700 05e6 00C0      		rjmp .L99
+ 196:main.c        **** }
+ 1702               	.LM252:
+ 1703 05e8 8093 C600 		sts 198,r24
+ 1704               	/* epilogue start */
+ 197:main.c        **** 
+ 1706               	.LM253:
+ 1707 05ec 0895      		ret
+ 1709               	.Lscope16:
+ 1711               		.stabd	78,0,0
+ 1713               	.global	uart_tx_s
+ 1715               	uart_tx_s:
+ 1716               		.stabd	46,0,0
+ 200:main.c        **** 	register char c;
+ 1718               	.LM254:
+ 1719               	.LFBB17:
+ 1720 05ee CF93      		push r28
+ 1721 05f0 DF93      		push r29
+ 1722               	/* prologue: function */
+ 1723               	/* frame size = 0 */
+ 1724               	/* stack size = 2 */
+ 1725               	.L__stack_usage = 2
+ 1726               	.L103:
+ 202:main.c        **** 	{
+ 1728               	.LM255:
+ 1729 05f2 EC01      		movw r28,r24
+ 202:main.c        **** 	{
+ 1731               	.LM256:
+ 1732 05f4 8991      		ld r24,Y+
+ 202:main.c        **** 	{
+ 1734               	.LM257:
+ 1735 05f6 8111      		cpse r24,__zero_reg__
+ 1736 05f8 00C0      		rjmp .L104
+ 1737               	/* epilogue start */
+ 206:main.c        **** 
+ 1739               	.LM258:
+ 1740 05fa DF91      		pop r29
+ 1741 05fc CF91      		pop r28
+ 1742 05fe 0895      		ret
+ 1743               	.L104:
+ 204:main.c        **** 	}
+ 1745               	.LM259:
+ 1746 0600 0E94 0000 		call uart_tx
+ 202:main.c        **** 	{
+ 1748               	.LM260:
+ 1749 0604 CE01      		movw r24,r28
+ 1750 0606 00C0      		rjmp .L103
+ 1755               	.Lscope17:
+ 1757               		.stabd	78,0,0
+ 1760               	.global	uart_tx_P
+ 1762               	uart_tx_P:
+ 1763               		.stabd	46,0,0
+ 209:main.c        **** 	register char c;
+ 1765               	.LM261:
+ 1766               	.LFBB18:
+ 1767 0608 CF93      		push r28
+ 1768 060a DF93      		push r29
+ 1769               	/* prologue: function */
+ 1770               	/* frame size = 0 */
+ 1771               	/* stack size = 2 */
+ 1772               	.L__stack_usage = 2
+ 1773 060c EC01      		movw r28,r24
+ 1774               	.L106:
+ 1775               	.LBB40:
+ 211:main.c        **** 	{
+ 1777               	.LM262:
+ 1778 060e FE01      		movw r30,r28
+ 1779               	/* #APP */
+ 1780               	 ;  211 "main.c" 1
+ 1781 0610 8491      		lpm r24, Z
+ 1782               		
+ 1783               	 ;  0 "" 2
+ 1784               	/* #NOAPP */
+ 1785 0612 2196      		adiw r28,1
+ 1786               	.LBE40:
+ 211:main.c        **** 	{
+ 1788               	.LM263:
+ 1789 0614 8111      		cpse r24,__zero_reg__
+ 1790 0616 00C0      		rjmp .L107
+ 1791               	/* epilogue start */
+ 215:main.c        **** 
+ 1793               	.LM264:
+ 1794 0618 DF91      		pop r29
+ 1795 061a CF91      		pop r28
+ 1796 061c 0895      		ret
+ 1797               	.L107:
+ 213:main.c        **** 	}
+ 1799               	.LM265:
+ 1800 061e 0E94 0000 		call uart_tx
+ 1801 0622 00C0      		rjmp .L106
+ 1806               	.Lscope18:
+ 1808               		.stabd	78,0,0
+ 1810               	.global	uart_rx
+ 1812               	uart_rx:
+ 1813               		.stabd	46,0,0
+ 415:main.c        **** 	if(!(UCSR0A & (1 << RXC0)))
+ 1815               	.LM266:
+ 1816               	.LFBB19:
+ 1817               	/* prologue: function */
+ 1818               	/* frame size = 0 */
+ 1819               	/* stack size = 0 */
+ 1820               	.L__stack_usage = 0
+ 416:main.c        **** 	{
+ 1822               	.LM267:
+ 1823 0624 8091 C000 		lds r24,192
+ 416:main.c        **** 	{
+ 1825               	.LM268:
+ 1826 0628 87FF      		sbrs r24,7
+ 1827 062a 00C0      		rjmp .L110
+ 421:main.c        **** }
+ 1829               	.LM269:
+ 1830 062c 8091 C600 		lds r24,198
+ 1831 0630 90E0      		ldi r25,0
+ 1832 0632 0895      		ret
+ 1833               	.L110:
+ 418:main.c        **** 	}
+ 1835               	.LM270:
+ 1836 0634 8FEF      		ldi r24,lo8(-1)
+ 1837 0636 9FEF      		ldi r25,lo8(-1)
+ 1838               	/* epilogue start */
+ 422:main.c        **** 
+ 1840               	.LM271:
+ 1841 0638 0895      		ret
+ 1843               	.Lscope19:
+ 1845               		.stabd	78,0,0
+ 1846               		.section	.rodata.str1.1,"aMS",@progbits,1
+ 1847               	.LC0:
+ 1848 0000 0D0A 00   		.string	"\r\n"
+ 1849               		.section	.text.startup,"ax",@progbits
+ 1851               	.global	main
+ 1853               	main:
+ 1854               		.stabd	46,0,0
+ 218:main.c        **** 	char buf[3], *p = buf;
+ 1856               	.LM272:
+ 1857               	.LFBB20:
+ 1858 0000 CDB7      		in r28,__SP_L__
+ 1859 0002 DEB7      		in r29,__SP_H__
+ 1860 0004 6197      		sbiw r28,17
+ 1861 0006 0FB6      		in __tmp_reg__,__SREG__
+ 1862 0008 F894      		cli
+ 1863 000a DEBF      		out __SP_H__,r29
+ 1864 000c 0FBE      		out __SREG__,__tmp_reg__
+ 1865 000e CDBF      		out __SP_L__,r28
+ 1866               	/* prologue: function */
+ 1867               	/* frame size = 17 */
+ 1868               	/* stack size = 17 */
+ 1869               	.L__stack_usage = 17
+ 226:main.c        **** 	led_update();
+ 1871               	.LM273:
+ 1872 0010 0E94 0000 		call led_clear.constprop.0
+ 227:main.c        **** 
+ 1874               	.LM274:
+ 1875 0014 0E94 0000 		call led_update
+ 230:main.c        **** 	TCCR0B = (1 << CS01) | (1 << CS00);
+ 1877               	.LM275:
+ 1878 0018 82E0      		ldi r24,lo8(2)
+ 1879 001a 84BD      		out 0x24,r24
+ 231:main.c        **** 	OCR0A = 250;
+ 1881               	.LM276:
+ 1882 001c 93E0      		ldi r25,lo8(3)
+ 1883 001e 95BD      		out 0x25,r25
+ 232:main.c        **** 	TIMSK0 = (1 << OCIE0A);
+ 1885               	.LM277:
+ 1886 0020 9AEF      		ldi r25,lo8(-6)
+ 1887 0022 97BD      		out 0x27,r25
+ 233:main.c        **** 
+ 1889               	.LM278:
+ 1890 0024 8093 6E00 		sts 110,r24
+ 236:main.c        **** 	TIMSK2 = (1 << TOIE2);
+ 1892               	.LM279:
+ 1893 0028 86E0      		ldi r24,lo8(6)
+ 1894 002a 8093 B100 		sts 177,r24
+ 237:main.c        **** 
+ 1896               	.LM280:
+ 1897 002e 91E0      		ldi r25,lo8(1)
+ 1898 0030 9093 7000 		sts 112,r25
+ 240:main.c        **** 	UCSR0A = 0;
+ 1900               	.LM281:
+ 1901 0034 27E6      		ldi r18,lo8(103)
+ 1902 0036 30E0      		ldi r19,0
+ 1903 0038 3093 C500 		sts 196+1,r19
+ 1904 003c 2093 C400 		sts 196,r18
+ 241:main.c        **** 	UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+ 1906               	.LM282:
+ 1907 0040 1092 C000 		sts 192,__zero_reg__
+ 242:main.c        **** 	UCSR0B = (1 << RXEN0) | (1 << TXEN0);
+ 1909               	.LM283:
+ 1910 0044 8093 C200 		sts 194,r24
+ 243:main.c        **** 
+ 1912               	.LM284:
+ 1913 0048 88E1      		ldi r24,lo8(24)
+ 1914 004a 8093 C100 		sts 193,r24
+ 245:main.c        **** 	img_value(_avg);
+ 1916               	.LM285:
+ 1917               	/* #APP */
+ 1918               	 ;  245 "main.c" 1
+ 1919 004e 7894      		sei
+ 1920               	 ;  0 "" 2
+ 246:main.c        **** 
+ 1922               	.LM286:
+ 1923               	/* #NOAPP */
+ 1924 0050 8091 0000 		lds r24,_avg
+ 1925 0054 0E94 0000 		call img_value
+ 223:main.c        **** 	uint16_t i;
+ 1927               	.LM287:
+ 1928 0058 812C      		mov r8,__zero_reg__
+ 1929 005a 912C      		mov r9,__zero_reg__
+ 1930 005c 5401      		movw r10,r8
+ 219:main.c        **** 	char s[8];
+ 1932               	.LM288:
+ 1933 005e 8E01      		movw r16,r28
+ 1934 0060 075F      		subi r16,-9
+ 1935 0062 1F4F      		sbci r17,-1
+ 1936 0064 3801      		movw r6,r16
+ 266:main.c        **** 			{
+ 1938               	.LM289:
+ 1939 0066 9E01      		movw r18,r28
+ 1940 0068 245F      		subi r18,-12
+ 1941 006a 3F4F      		sbci r19,-1
+ 1942 006c 3D87      		std Y+13,r19
+ 1943 006e 2C87      		std Y+12,r18
+ 1944               	.LBB61:
+ 1945               	.LBB62:
+ 759:main.c        **** 	}
+ 1947               	.LM290:
+ 1948 0070 83E0      		ldi r24,lo8(3)
+ 1949 0072 482E      		mov r4,r24
+ 1950               	.LBE62:
+ 1951               	.LBE61:
+ 1952               	.LBB66:
+ 1953               	.LBB67:
+ 854:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 1955               	.LM291:
+ 1956 0074 9BE0      		ldi r25,lo8(11)
+ 1957 0076 592E      		mov r5,r25
+ 1958               	.L112:
+ 1959               	.LBE67:
+ 1960               	.LBE66:
+ 250:main.c        **** 		{
+ 1962               	.LM292:
+ 1963 0078 0E94 0000 		call uart_rx
+ 250:main.c        **** 		{
+ 1965               	.LM293:
+ 1966 007c 97FD      		sbrc r25,7
+ 1967 007e 00C0      		rjmp .L113
+ 252:main.c        **** 			{
+ 1969               	.LM294:
+ 1970 0080 8A30      		cpi r24,10
+ 1971 0082 9105      		cpc r25,__zero_reg__
+ 1972 0084 01F0      		breq .+2
+ 1973 0086 00C0      		rjmp .L114
+ 1974               	.LBB71:
+ 255:main.c        **** 				val = strtol(buf, NULL, 16);
+ 1976               	.LM295:
+ 1977 0088 D801      		movw r26,r16
+ 1978 008a 1C92      		st X,__zero_reg__
+ 256:main.c        **** 				p = buf;
+ 1980               	.LM296:
+ 1981 008c 40E1      		ldi r20,lo8(16)
+ 1982 008e 50E0      		ldi r21,0
+ 1983 0090 70E0      		ldi r23,0
+ 1984 0092 60E0      		ldi r22,0
+ 1985 0094 C301      		movw r24,r6
+ 1986 0096 0E94 0000 		call strtol
+ 258:main.c        **** 				++_count;
+ 1988               	.LM297:
+ 1989 009a 8091 0000 		lds r24,_sum
+ 1990 009e 9091 0000 		lds r25,_sum+1
+ 1991 00a2 A091 0000 		lds r26,_sum+2
+ 1992 00a6 B091 0000 		lds r27,_sum+3
+ 1993 00aa 9C01      		movw r18,r24
+ 1994 00ac AD01      		movw r20,r26
+ 1995 00ae 260F      		add r18,r22
+ 1996 00b0 311D      		adc r19,__zero_reg__
+ 1997 00b2 411D      		adc r20,__zero_reg__
+ 1998 00b4 511D      		adc r21,__zero_reg__
+ 1999 00b6 2E87      		std Y+14,r18
+ 2000 00b8 3F87      		std Y+15,r19
+ 2001 00ba 488B      		std Y+16,r20
+ 2002 00bc 598B      		std Y+17,r21
+ 2003 00be 2093 0000 		sts _sum,r18
+ 2004 00c2 3093 0000 		sts _sum+1,r19
+ 2005 00c6 4093 0000 		sts _sum+2,r20
+ 2006 00ca 5093 0000 		sts _sum+3,r21
+ 259:main.c        **** 				_avg = _sum / _count;
+ 2008               	.LM298:
+ 2009 00ce 2091 0000 		lds r18,_count
+ 2010 00d2 3091 0000 		lds r19,_count+1
+ 2011 00d6 2F5F      		subi r18,-1
+ 2012 00d8 3F4F      		sbci r19,-1
+ 2013 00da 3093 0000 		sts _count+1,r19
+ 2014 00de 2093 0000 		sts _count,r18
+ 260:main.c        **** 				if(_mode == MODE_SMILEY)
+ 2016               	.LM299:
+ 2017 00e2 50E0      		ldi r21,0
+ 2018 00e4 40E0      		ldi r20,0
+ 2019 00e6 6E85      		ldd r22,Y+14
+ 2020 00e8 7F85      		ldd r23,Y+15
+ 2021 00ea 8889      		ldd r24,Y+16
+ 2022 00ec 9989      		ldd r25,Y+17
+ 2023 00ee 0E94 0000 		call __udivmodsi4
+ 2024 00f2 822F      		mov r24,r18
+ 260:main.c        **** 				if(_mode == MODE_SMILEY)
+ 2026               	.LM300:
+ 2027 00f4 2093 0000 		sts _avg,r18
+ 261:main.c        **** 				{
+ 2029               	.LM301:
+ 2030 00f8 9091 0000 		lds r25,_mode
+ 2031 00fc 9111      		cpse r25,__zero_reg__
+ 2032 00fe 00C0      		rjmp .L171
+ 263:main.c        **** 				}
+ 2034               	.LM302:
+ 2035 0100 0E94 0000 		call img_value
+ 2036               	.L171:
+ 257:main.c        **** 				_sum += val;
+ 2038               	.LM303:
+ 2039 0104 8301      		movw r16,r6
+ 2040 0106 00C0      		rjmp .L113
+ 2041               	.L114:
+ 2042               	.LBE71:
+ 266:main.c        **** 			{
+ 2044               	.LM304:
+ 2045 0108 4C85      		ldd r20,Y+12
+ 2046 010a 5D85      		ldd r21,Y+13
+ 2047 010c 0417      		cp r16,r20
+ 2048 010e 1507      		cpc r17,r21
+ 2049 0110 00F4      		brsh .L113
+ 268:main.c        **** 			}
+ 2051               	.LM305:
+ 2052 0112 F801      		movw r30,r16
+ 268:main.c        **** 			}
+ 2054               	.LM306:
+ 2055 0114 8193      		st Z+,r24
+ 268:main.c        **** 			}
+ 2057               	.LM307:
+ 2058 0116 8F01      		movw r16,r30
+ 2059               	.L113:
+ 272:main.c        **** 		i = rc5_data;
+ 2061               	.LM308:
+ 2062               	/* #APP */
+ 2063               	 ;  272 "main.c" 1
+ 2064 0118 F894      		cli
+ 2065               	 ;  0 "" 2
+ 273:main.c        **** 		rc5_data = 0;
+ 2067               	.LM309:
+ 2068               	/* #NOAPP */
+ 2069 011a 8091 0000 		lds r24,rc5_data
+ 2070 011e 9091 0000 		lds r25,rc5_data+1
+ 274:main.c        **** 		sei();
+ 2072               	.LM310:
+ 2073 0122 1092 0000 		sts rc5_data+1,__zero_reg__
+ 2074 0126 1092 0000 		sts rc5_data,__zero_reg__
+ 275:main.c        **** 
+ 2076               	.LM311:
+ 2077               	/* #APP */
+ 2078               	 ;  275 "main.c" 1
+ 2079 012a 7894      		sei
+ 2080               	 ;  0 "" 2
+ 277:main.c        **** 		{
+ 2082               	.LM312:
+ 2083               	/* #NOAPP */
+ 2084 012c 0097      		sbiw r24,0
+ 2085 012e 01F0      		breq .L116
+ 279:main.c        **** 
+ 2087               	.LM313:
+ 2088 0130 7C01      		movw r14,r24
+ 2089 0132 5FE3      		ldi r21,63
+ 2090 0134 E522      		and r14,r21
+ 2091 0136 FF24      		clr r15
+ 279:main.c        **** 
+ 2093               	.LM314:
+ 2094 0138 8095      		com r24
+ 2095 013a 9095      		com r25
+ 279:main.c        **** 
+ 2097               	.LM315:
+ 2098 013c 880F      		lsl r24
+ 2099 013e 892F      		mov r24,r25
+ 2100 0140 881F      		rol r24
+ 2101 0142 990B      		sbc r25,r25
+ 2102 0144 9195      		neg r25
+ 279:main.c        **** 
+ 2104               	.LM316:
+ 2105 0146 8074      		andi r24,64
+ 2106 0148 9927      		clr r25
+ 279:main.c        **** 
+ 2108               	.LM317:
+ 2109 014a E82A      		or r14,r24
+ 2110 014c F92A      		or r15,r25
+ 281:main.c        **** 			uart_tx_s(itoa(i, s, 10));
+ 2112               	.LM318:
+ 2113 014e 80E0      		ldi r24,lo8(__c.1514)
+ 2114 0150 90E0      		ldi r25,hi8(__c.1514)
+ 2115 0152 0E94 0000 		call uart_tx_P
+ 2116               	.LBB72:
+ 2117               	.LBB73:
+ 2119               	.Ltext7:
+   1:/usr/avr/include/stdlib.h **** /* Copyright (c) 2002, Marek Michalkiewicz
+   2:/usr/avr/include/stdlib.h ****    Copyright (c) 2004,2007 Joerg Wunsch
+   3:/usr/avr/include/stdlib.h **** 
+   4:/usr/avr/include/stdlib.h ****    Portions of documentation Copyright (c) 1990, 1991, 1993, 1994
+   5:/usr/avr/include/stdlib.h ****    The Regents of the University of California.
+   6:/usr/avr/include/stdlib.h **** 
+   7:/usr/avr/include/stdlib.h ****    All rights reserved.
+   8:/usr/avr/include/stdlib.h **** 
+   9:/usr/avr/include/stdlib.h ****    Redistribution and use in source and binary forms, with or without
+  10:/usr/avr/include/stdlib.h ****    modification, are permitted provided that the following conditions are met:
+  11:/usr/avr/include/stdlib.h **** 
+  12:/usr/avr/include/stdlib.h ****    * Redistributions of source code must retain the above copyright
+  13:/usr/avr/include/stdlib.h ****      notice, this list of conditions and the following disclaimer.
+  14:/usr/avr/include/stdlib.h **** 
+  15:/usr/avr/include/stdlib.h ****    * Redistributions in binary form must reproduce the above copyright
+  16:/usr/avr/include/stdlib.h ****      notice, this list of conditions and the following disclaimer in
+  17:/usr/avr/include/stdlib.h ****      the documentation and/or other materials provided with the
+  18:/usr/avr/include/stdlib.h ****      distribution.
+  19:/usr/avr/include/stdlib.h **** 
+  20:/usr/avr/include/stdlib.h ****    * Neither the name of the copyright holders nor the names of
+  21:/usr/avr/include/stdlib.h ****      contributors may be used to endorse or promote products derived
+  22:/usr/avr/include/stdlib.h ****      from this software without specific prior written permission.
+  23:/usr/avr/include/stdlib.h **** 
+  24:/usr/avr/include/stdlib.h ****   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  25:/usr/avr/include/stdlib.h ****   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  26:/usr/avr/include/stdlib.h ****   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  27:/usr/avr/include/stdlib.h ****   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+  28:/usr/avr/include/stdlib.h ****   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  29:/usr/avr/include/stdlib.h ****   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  30:/usr/avr/include/stdlib.h ****   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  31:/usr/avr/include/stdlib.h ****   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  32:/usr/avr/include/stdlib.h ****   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  33:/usr/avr/include/stdlib.h ****   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  34:/usr/avr/include/stdlib.h ****   POSSIBILITY OF SUCH DAMAGE.
+  35:/usr/avr/include/stdlib.h **** 
+  36:/usr/avr/include/stdlib.h ****   $Id: stdlib.h 2503 2016-02-07 22:59:47Z joerg_wunsch $
+  37:/usr/avr/include/stdlib.h **** */
+  38:/usr/avr/include/stdlib.h **** 
+  39:/usr/avr/include/stdlib.h **** #ifndef _STDLIB_H_
+  40:/usr/avr/include/stdlib.h **** #define	_STDLIB_H_ 1
+  41:/usr/avr/include/stdlib.h **** 
+  42:/usr/avr/include/stdlib.h **** #ifndef __ASSEMBLER__
+  43:/usr/avr/include/stdlib.h **** 
+  44:/usr/avr/include/stdlib.h **** #ifndef __DOXYGEN__
+  45:/usr/avr/include/stdlib.h **** #define __need_NULL
+  46:/usr/avr/include/stdlib.h **** #define __need_size_t
+  47:/usr/avr/include/stdlib.h **** #define __need_wchar_t
+  48:/usr/avr/include/stdlib.h **** #include <stddef.h>
+  49:/usr/avr/include/stdlib.h **** 
+  50:/usr/avr/include/stdlib.h **** #ifndef __ptr_t
+  51:/usr/avr/include/stdlib.h **** #define __ptr_t void *
+  52:/usr/avr/include/stdlib.h **** #endif
+  53:/usr/avr/include/stdlib.h **** #endif	/* !__DOXYGEN__ */
+  54:/usr/avr/include/stdlib.h **** 
+  55:/usr/avr/include/stdlib.h **** #ifdef __cplusplus
+  56:/usr/avr/include/stdlib.h **** extern "C" {
+  57:/usr/avr/include/stdlib.h **** #endif
+  58:/usr/avr/include/stdlib.h **** 
+  59:/usr/avr/include/stdlib.h **** /** \file */
+  60:/usr/avr/include/stdlib.h **** 
+  61:/usr/avr/include/stdlib.h **** /** \defgroup avr_stdlib <stdlib.h>: General utilities
+  62:/usr/avr/include/stdlib.h ****     \code #include <stdlib.h> \endcode
+  63:/usr/avr/include/stdlib.h **** 
+  64:/usr/avr/include/stdlib.h ****     This file declares some basic C macros and functions as
+  65:/usr/avr/include/stdlib.h ****     defined by the ISO standard, plus some AVR-specific extensions.
+  66:/usr/avr/include/stdlib.h **** */
+  67:/usr/avr/include/stdlib.h **** 
+  68:/usr/avr/include/stdlib.h **** /*@{*/
+  69:/usr/avr/include/stdlib.h **** /** Result type for function div(). */
+  70:/usr/avr/include/stdlib.h **** typedef struct {
+  71:/usr/avr/include/stdlib.h **** 	int quot;                   /**< The Quotient. */
+  72:/usr/avr/include/stdlib.h **** 	int rem;                    /**< The Remainder. */
+  73:/usr/avr/include/stdlib.h **** } div_t;
+  74:/usr/avr/include/stdlib.h **** 
+  75:/usr/avr/include/stdlib.h **** /** Result type for function ldiv(). */
+  76:/usr/avr/include/stdlib.h **** typedef struct {
+  77:/usr/avr/include/stdlib.h **** 	long quot;                  /**< The Quotient. */
+  78:/usr/avr/include/stdlib.h **** 	long rem;                   /**< The Remainder. */
+  79:/usr/avr/include/stdlib.h **** } ldiv_t;
+  80:/usr/avr/include/stdlib.h **** 
+  81:/usr/avr/include/stdlib.h **** /** Comparision function type for qsort(), just for convenience. */
+  82:/usr/avr/include/stdlib.h **** typedef int (*__compar_fn_t)(const void *, const void *);
+  83:/usr/avr/include/stdlib.h **** 
+  84:/usr/avr/include/stdlib.h **** #ifndef __DOXYGEN__
+  85:/usr/avr/include/stdlib.h **** 
+  86:/usr/avr/include/stdlib.h **** #ifndef __ATTR_CONST__
+  87:/usr/avr/include/stdlib.h **** # define __ATTR_CONST__ __attribute__((__const__))
+  88:/usr/avr/include/stdlib.h **** #endif
+  89:/usr/avr/include/stdlib.h **** 
+  90:/usr/avr/include/stdlib.h **** #ifndef __ATTR_MALLOC__
+  91:/usr/avr/include/stdlib.h **** # define __ATTR_MALLOC__ __attribute__((__malloc__))
+  92:/usr/avr/include/stdlib.h **** #endif
+  93:/usr/avr/include/stdlib.h **** 
+  94:/usr/avr/include/stdlib.h **** #ifndef __ATTR_NORETURN__
+  95:/usr/avr/include/stdlib.h **** # define __ATTR_NORETURN__ __attribute__((__noreturn__))
+  96:/usr/avr/include/stdlib.h **** #endif
+  97:/usr/avr/include/stdlib.h **** 
+  98:/usr/avr/include/stdlib.h **** #ifndef __ATTR_PURE__
+  99:/usr/avr/include/stdlib.h **** # define __ATTR_PURE__ __attribute__((__pure__))
+ 100:/usr/avr/include/stdlib.h **** #endif
+ 101:/usr/avr/include/stdlib.h **** 
+ 102:/usr/avr/include/stdlib.h **** #ifndef	__ATTR_GNU_INLINE__
+ 103:/usr/avr/include/stdlib.h **** # ifdef  __GNUC_STDC_INLINE__
+ 104:/usr/avr/include/stdlib.h **** #  define __ATTR_GNU_INLINE__   __attribute__((__gnu_inline__))
+ 105:/usr/avr/include/stdlib.h **** # else
+ 106:/usr/avr/include/stdlib.h **** #  define __ATTR_GNU_INLINE__
+ 107:/usr/avr/include/stdlib.h **** # endif
+ 108:/usr/avr/include/stdlib.h **** #endif
+ 109:/usr/avr/include/stdlib.h **** 
+ 110:/usr/avr/include/stdlib.h **** #endif
+ 111:/usr/avr/include/stdlib.h **** 
+ 112:/usr/avr/include/stdlib.h **** /** The abort() function causes abnormal program termination to occur.
+ 113:/usr/avr/include/stdlib.h ****     This realization disables interrupts and jumps to _exit() function
+ 114:/usr/avr/include/stdlib.h ****     with argument equal to 1. In the limited AVR environment, execution is
+ 115:/usr/avr/include/stdlib.h ****     effectively halted by entering an infinite loop. */
+ 116:/usr/avr/include/stdlib.h **** extern void abort(void) __ATTR_NORETURN__;
+ 117:/usr/avr/include/stdlib.h **** 
+ 118:/usr/avr/include/stdlib.h **** /** The abs() function computes the absolute value of the integer \c i.
+ 119:/usr/avr/include/stdlib.h ****    \note The abs() and labs() functions are builtins of gcc.
+ 120:/usr/avr/include/stdlib.h **** */
+ 121:/usr/avr/include/stdlib.h **** extern int abs(int __i) __ATTR_CONST__;
+ 122:/usr/avr/include/stdlib.h **** #ifndef __DOXYGEN__
+ 123:/usr/avr/include/stdlib.h **** #define	abs(__i) __builtin_abs(__i)
+ 124:/usr/avr/include/stdlib.h **** #endif
+ 125:/usr/avr/include/stdlib.h **** 
+ 126:/usr/avr/include/stdlib.h **** /** The labs() function computes the absolute value of the long integer
+ 127:/usr/avr/include/stdlib.h ****     \c i.
+ 128:/usr/avr/include/stdlib.h ****    \note The abs() and labs() functions are builtins of gcc.
+ 129:/usr/avr/include/stdlib.h **** */
+ 130:/usr/avr/include/stdlib.h **** extern long labs(long __i) __ATTR_CONST__;
+ 131:/usr/avr/include/stdlib.h **** #ifndef __DOXYGEN__
+ 132:/usr/avr/include/stdlib.h **** #define labs(__i) __builtin_labs(__i)
+ 133:/usr/avr/include/stdlib.h **** #endif
+ 134:/usr/avr/include/stdlib.h **** 
+ 135:/usr/avr/include/stdlib.h **** /**
+ 136:/usr/avr/include/stdlib.h ****      The bsearch() function searches an array of \c nmemb objects, the
+ 137:/usr/avr/include/stdlib.h ****      initial member of which is pointed to by \c base, for a member
+ 138:/usr/avr/include/stdlib.h ****      that matches the object pointed to by \c key.  The size of each
+ 139:/usr/avr/include/stdlib.h ****      member of the array is specified by \c size.
+ 140:/usr/avr/include/stdlib.h **** 
+ 141:/usr/avr/include/stdlib.h ****      The contents of the array should be in ascending sorted order
+ 142:/usr/avr/include/stdlib.h ****      according to the comparison function referenced by \c compar.
+ 143:/usr/avr/include/stdlib.h ****      The \c compar routine is expected to have two arguments which
+ 144:/usr/avr/include/stdlib.h ****      point to the key object and to an array member, in that order,
+ 145:/usr/avr/include/stdlib.h ****      and should return an integer less than, equal to, or greater than
+ 146:/usr/avr/include/stdlib.h ****      zero if the key object is found, respectively, to be less than,
+ 147:/usr/avr/include/stdlib.h ****      to match, or be greater than the array member.
+ 148:/usr/avr/include/stdlib.h **** 
+ 149:/usr/avr/include/stdlib.h ****      The bsearch() function returns a pointer to a matching member of
+ 150:/usr/avr/include/stdlib.h ****      the array, or a null pointer if no match is found.  If two
+ 151:/usr/avr/include/stdlib.h ****      members compare as equal, which member is matched is unspecified.
+ 152:/usr/avr/include/stdlib.h **** */
+ 153:/usr/avr/include/stdlib.h **** extern void *bsearch(const void *__key, const void *__base, size_t __nmemb,
+ 154:/usr/avr/include/stdlib.h **** 		     size_t __size, int (*__compar)(const void *, const void *));
+ 155:/usr/avr/include/stdlib.h **** 
+ 156:/usr/avr/include/stdlib.h **** /* __divmodhi4 and __divmodsi4 from libgcc.a */
+ 157:/usr/avr/include/stdlib.h **** /**
+ 158:/usr/avr/include/stdlib.h ****      The div() function computes the value \c num/denom and returns
+ 159:/usr/avr/include/stdlib.h ****      the quotient and remainder in a structure named \c div_t that
+ 160:/usr/avr/include/stdlib.h ****      contains two int members named \c quot and \c rem.
+ 161:/usr/avr/include/stdlib.h **** */
+ 162:/usr/avr/include/stdlib.h **** extern div_t div(int __num, int __denom) __asm__("__divmodhi4") __ATTR_CONST__;
+ 163:/usr/avr/include/stdlib.h **** /**
+ 164:/usr/avr/include/stdlib.h ****      The ldiv() function computes the value \c num/denom and returns
+ 165:/usr/avr/include/stdlib.h ****      the quotient and remainder in a structure named \c ldiv_t that
+ 166:/usr/avr/include/stdlib.h ****      contains two long integer members named \c quot and \c rem.
+ 167:/usr/avr/include/stdlib.h **** */
+ 168:/usr/avr/include/stdlib.h **** extern ldiv_t ldiv(long __num, long __denom) __asm__("__divmodsi4") __ATTR_CONST__;
+ 169:/usr/avr/include/stdlib.h **** 
+ 170:/usr/avr/include/stdlib.h **** /**
+ 171:/usr/avr/include/stdlib.h ****      The qsort() function is a modified partition-exchange sort, or
+ 172:/usr/avr/include/stdlib.h ****      quicksort.
+ 173:/usr/avr/include/stdlib.h **** 
+ 174:/usr/avr/include/stdlib.h ****      The qsort() function sorts an array of \c nmemb objects, the
+ 175:/usr/avr/include/stdlib.h ****      initial member of which is pointed to by \c base.  The size of
+ 176:/usr/avr/include/stdlib.h ****      each object is specified by \c size.  The contents of the array
+ 177:/usr/avr/include/stdlib.h ****      base are sorted in ascending order according to a comparison
+ 178:/usr/avr/include/stdlib.h ****      function pointed to by \c compar, which requires two arguments
+ 179:/usr/avr/include/stdlib.h ****      pointing to the objects being compared.
+ 180:/usr/avr/include/stdlib.h **** 
+ 181:/usr/avr/include/stdlib.h ****      The comparison function must return an integer less than, equal
+ 182:/usr/avr/include/stdlib.h ****      to, or greater than zero if the first argument is considered to
+ 183:/usr/avr/include/stdlib.h ****      be respectively less than, equal to, or greater than the second.
+ 184:/usr/avr/include/stdlib.h **** */
+ 185:/usr/avr/include/stdlib.h **** extern void qsort(void *__base, size_t __nmemb, size_t __size,
+ 186:/usr/avr/include/stdlib.h **** 		  __compar_fn_t __compar);
+ 187:/usr/avr/include/stdlib.h **** 
+ 188:/usr/avr/include/stdlib.h **** /**
+ 189:/usr/avr/include/stdlib.h ****     The strtol() function converts the string in \c nptr to a long
+ 190:/usr/avr/include/stdlib.h ****     value.  The conversion is done according to the given base, which
+ 191:/usr/avr/include/stdlib.h ****     must be between 2 and 36 inclusive, or be the special value 0.
+ 192:/usr/avr/include/stdlib.h **** 
+ 193:/usr/avr/include/stdlib.h ****     The string may begin with an arbitrary amount of white space (as
+ 194:/usr/avr/include/stdlib.h ****     determined by isspace()) followed by a single optional \c '+' or \c '-'
+ 195:/usr/avr/include/stdlib.h ****     sign.  If \c base is zero or 16, the string may then include a
+ 196:/usr/avr/include/stdlib.h ****     \c "0x" prefix, and the number will be read in base 16; otherwise,
+ 197:/usr/avr/include/stdlib.h ****     a zero base is taken as 10 (decimal) unless the next character is
+ 198:/usr/avr/include/stdlib.h ****     \c '0', in which case it is taken as 8 (octal).
+ 199:/usr/avr/include/stdlib.h **** 
+ 200:/usr/avr/include/stdlib.h ****     The remainder of the string is converted to a long value in the
+ 201:/usr/avr/include/stdlib.h ****     obvious manner, stopping at the first character which is not a
+ 202:/usr/avr/include/stdlib.h ****     valid digit in the given base.  (In bases above 10, the letter \c 'A'
+ 203:/usr/avr/include/stdlib.h ****     in either upper or lower case represents 10, \c 'B' represents 11,
+ 204:/usr/avr/include/stdlib.h ****     and so forth, with \c 'Z' representing 35.)
+ 205:/usr/avr/include/stdlib.h **** 
+ 206:/usr/avr/include/stdlib.h ****     If \c endptr is not NULL, strtol() stores the address of the first
+ 207:/usr/avr/include/stdlib.h ****     invalid character in \c *endptr.  If there were no digits at all,
+ 208:/usr/avr/include/stdlib.h ****     however, strtol() stores the original value of \c nptr in \c
+ 209:/usr/avr/include/stdlib.h ****     *endptr.  (Thus, if \c *nptr is not \c '\\0' but \c **endptr is \c '\\0'
+ 210:/usr/avr/include/stdlib.h ****     on return, the entire string was valid.)
+ 211:/usr/avr/include/stdlib.h **** 
+ 212:/usr/avr/include/stdlib.h ****     The strtol() function returns the result of the conversion, unless
+ 213:/usr/avr/include/stdlib.h ****     the value would underflow or overflow.  If no conversion could be
+ 214:/usr/avr/include/stdlib.h ****     performed, 0 is returned.  If an overflow or underflow occurs, \c
+ 215:/usr/avr/include/stdlib.h ****     errno is set to \ref avr_errno "ERANGE" and the function return value
+ 216:/usr/avr/include/stdlib.h ****     is clamped to \c LONG_MIN or \c LONG_MAX, respectively.
+ 217:/usr/avr/include/stdlib.h **** */
+ 218:/usr/avr/include/stdlib.h **** extern long strtol(const char *__nptr, char **__endptr, int __base);
+ 219:/usr/avr/include/stdlib.h **** 
+ 220:/usr/avr/include/stdlib.h **** /**
+ 221:/usr/avr/include/stdlib.h ****     The strtoul() function converts the string in \c nptr to an
+ 222:/usr/avr/include/stdlib.h ****     unsigned long value.  The conversion is done according to the
+ 223:/usr/avr/include/stdlib.h ****     given base, which must be between 2 and 36 inclusive, or be the
+ 224:/usr/avr/include/stdlib.h ****     special value 0.
+ 225:/usr/avr/include/stdlib.h **** 
+ 226:/usr/avr/include/stdlib.h ****     The string may begin with an arbitrary amount of white space (as
+ 227:/usr/avr/include/stdlib.h ****     determined by isspace()) followed by a single optional \c '+' or \c '-'
+ 228:/usr/avr/include/stdlib.h ****     sign.  If \c base is zero or 16, the string may then include a
+ 229:/usr/avr/include/stdlib.h ****     \c "0x" prefix, and the number will be read in base 16; otherwise,
+ 230:/usr/avr/include/stdlib.h ****     a zero base is taken as 10 (decimal) unless the next character is
+ 231:/usr/avr/include/stdlib.h ****     \c '0', in which case it is taken as 8 (octal).
+ 232:/usr/avr/include/stdlib.h **** 
+ 233:/usr/avr/include/stdlib.h ****     The remainder of the string is converted to an unsigned long value
+ 234:/usr/avr/include/stdlib.h ****     in the obvious manner, stopping at the first character which is
+ 235:/usr/avr/include/stdlib.h ****     not a valid digit in the given base.  (In bases above 10, the
+ 236:/usr/avr/include/stdlib.h ****     letter \c 'A' in either upper or lower case represents 10, \c 'B'
+ 237:/usr/avr/include/stdlib.h ****     represents 11, and so forth, with \c 'Z' representing 35.)
+ 238:/usr/avr/include/stdlib.h **** 
+ 239:/usr/avr/include/stdlib.h ****     If \c endptr is not NULL, strtoul() stores the address of the first
+ 240:/usr/avr/include/stdlib.h ****     invalid character in \c *endptr.  If there were no digits at all,
+ 241:/usr/avr/include/stdlib.h ****     however, strtoul() stores the original value of \c nptr in \c
+ 242:/usr/avr/include/stdlib.h ****     *endptr.  (Thus, if \c *nptr is not \c '\\0' but \c **endptr is \c '\\0'
+ 243:/usr/avr/include/stdlib.h ****     on return, the entire string was valid.)
+ 244:/usr/avr/include/stdlib.h **** 
+ 245:/usr/avr/include/stdlib.h ****     The strtoul() function return either the result of the conversion
+ 246:/usr/avr/include/stdlib.h ****     or, if there was a leading minus sign, the negation of the result
+ 247:/usr/avr/include/stdlib.h ****     of the conversion, unless the original (non-negated) value would
+ 248:/usr/avr/include/stdlib.h ****     overflow; in the latter case, strtoul() returns ULONG_MAX, and \c
+ 249:/usr/avr/include/stdlib.h ****     errno is set to \ref avr_errno "ERANGE".  If no conversion could 
+ 250:/usr/avr/include/stdlib.h ****     be performed, 0 is returned.
+ 251:/usr/avr/include/stdlib.h **** */
+ 252:/usr/avr/include/stdlib.h **** extern unsigned long strtoul(const char *__nptr, char **__endptr, int __base);
+ 253:/usr/avr/include/stdlib.h **** 
+ 254:/usr/avr/include/stdlib.h **** /**
+ 255:/usr/avr/include/stdlib.h ****     The atol() function converts the initial portion of the string
+ 256:/usr/avr/include/stdlib.h ****     pointed to by \p s to long integer representation. In contrast to
+ 257:/usr/avr/include/stdlib.h **** 
+ 258:/usr/avr/include/stdlib.h ****         \code strtol(s, (char **)NULL, 10); \endcode
+ 259:/usr/avr/include/stdlib.h **** 
+ 260:/usr/avr/include/stdlib.h ****     this function does not detect overflow (\c errno is not changed and
+ 261:/usr/avr/include/stdlib.h ****     the result value is not predictable), uses smaller memory (flash and
+ 262:/usr/avr/include/stdlib.h ****     stack) and works more quickly.
+ 263:/usr/avr/include/stdlib.h **** */
+ 264:/usr/avr/include/stdlib.h **** extern long atol(const char *__s) __ATTR_PURE__;
+ 265:/usr/avr/include/stdlib.h **** 
+ 266:/usr/avr/include/stdlib.h **** /**
+ 267:/usr/avr/include/stdlib.h ****     The atoi() function converts the initial portion of the string
+ 268:/usr/avr/include/stdlib.h ****     pointed to by \p s to integer representation. In contrast to
+ 269:/usr/avr/include/stdlib.h **** 
+ 270:/usr/avr/include/stdlib.h ****         \code (int)strtol(s, (char **)NULL, 10); \endcode
+ 271:/usr/avr/include/stdlib.h **** 
+ 272:/usr/avr/include/stdlib.h ****     this function does not detect overflow (\c errno is not changed and
+ 273:/usr/avr/include/stdlib.h ****     the result value is not predictable), uses smaller memory (flash and
+ 274:/usr/avr/include/stdlib.h ****     stack) and works more quickly.
+ 275:/usr/avr/include/stdlib.h **** */
+ 276:/usr/avr/include/stdlib.h **** extern int atoi(const char *__s) __ATTR_PURE__;
+ 277:/usr/avr/include/stdlib.h **** 
+ 278:/usr/avr/include/stdlib.h **** /**
+ 279:/usr/avr/include/stdlib.h ****    The exit() function terminates the application.  Since there is no
+ 280:/usr/avr/include/stdlib.h ****    environment to return to, \c status is ignored, and code execution
+ 281:/usr/avr/include/stdlib.h ****    will eventually reach an infinite loop, thereby effectively halting
+ 282:/usr/avr/include/stdlib.h ****    all code processing.  Before entering the infinite loop, interrupts
+ 283:/usr/avr/include/stdlib.h ****    are globally disabled.
+ 284:/usr/avr/include/stdlib.h **** 
+ 285:/usr/avr/include/stdlib.h ****    In a C++ context, global destructors will be called before halting
+ 286:/usr/avr/include/stdlib.h ****    execution.
+ 287:/usr/avr/include/stdlib.h **** */
+ 288:/usr/avr/include/stdlib.h **** extern void exit(int __status) __ATTR_NORETURN__;
+ 289:/usr/avr/include/stdlib.h **** 
+ 290:/usr/avr/include/stdlib.h **** /**
+ 291:/usr/avr/include/stdlib.h ****    The malloc() function allocates \c size bytes of memory.
+ 292:/usr/avr/include/stdlib.h ****    If malloc() fails, a NULL pointer is returned.
+ 293:/usr/avr/include/stdlib.h **** 
+ 294:/usr/avr/include/stdlib.h ****    Note that malloc() does \e not initialize the returned memory to
+ 295:/usr/avr/include/stdlib.h ****    zero bytes.
+ 296:/usr/avr/include/stdlib.h **** 
+ 297:/usr/avr/include/stdlib.h ****    See the chapter about \ref malloc "malloc() usage" for implementation
+ 298:/usr/avr/include/stdlib.h ****    details.
+ 299:/usr/avr/include/stdlib.h **** */
+ 300:/usr/avr/include/stdlib.h **** extern void *malloc(size_t __size) __ATTR_MALLOC__;
+ 301:/usr/avr/include/stdlib.h **** 
+ 302:/usr/avr/include/stdlib.h **** /**
+ 303:/usr/avr/include/stdlib.h ****    The free() function causes the allocated memory referenced by \c
+ 304:/usr/avr/include/stdlib.h ****    ptr to be made available for future allocations.  If \c ptr is
+ 305:/usr/avr/include/stdlib.h ****    NULL, no action occurs.
+ 306:/usr/avr/include/stdlib.h **** */
+ 307:/usr/avr/include/stdlib.h **** extern void free(void *__ptr);
+ 308:/usr/avr/include/stdlib.h **** 
+ 309:/usr/avr/include/stdlib.h **** /**
+ 310:/usr/avr/include/stdlib.h ****    \c malloc() \ref malloc_tunables "tunable".
+ 311:/usr/avr/include/stdlib.h **** */
+ 312:/usr/avr/include/stdlib.h **** extern size_t __malloc_margin;
+ 313:/usr/avr/include/stdlib.h **** 
+ 314:/usr/avr/include/stdlib.h **** /**
+ 315:/usr/avr/include/stdlib.h ****    \c malloc() \ref malloc_tunables "tunable".
+ 316:/usr/avr/include/stdlib.h **** */
+ 317:/usr/avr/include/stdlib.h **** extern char *__malloc_heap_start;
+ 318:/usr/avr/include/stdlib.h **** 
+ 319:/usr/avr/include/stdlib.h **** /**
+ 320:/usr/avr/include/stdlib.h ****    \c malloc() \ref malloc_tunables "tunable".
+ 321:/usr/avr/include/stdlib.h **** */
+ 322:/usr/avr/include/stdlib.h **** extern char *__malloc_heap_end;
+ 323:/usr/avr/include/stdlib.h **** 
+ 324:/usr/avr/include/stdlib.h **** /**
+ 325:/usr/avr/include/stdlib.h ****    Allocate \c nele elements of \c size each.  Identical to calling
+ 326:/usr/avr/include/stdlib.h ****    \c malloc() using <tt>nele * size</tt> as argument, except the
+ 327:/usr/avr/include/stdlib.h ****    allocated memory will be cleared to zero.
+ 328:/usr/avr/include/stdlib.h **** */
+ 329:/usr/avr/include/stdlib.h **** extern void *calloc(size_t __nele, size_t __size) __ATTR_MALLOC__;
+ 330:/usr/avr/include/stdlib.h **** 
+ 331:/usr/avr/include/stdlib.h **** /**
+ 332:/usr/avr/include/stdlib.h ****    The realloc() function tries to change the size of the region
+ 333:/usr/avr/include/stdlib.h ****    allocated at \c ptr to the new \c size value.  It returns a
+ 334:/usr/avr/include/stdlib.h ****    pointer to the new region.  The returned pointer might be the
+ 335:/usr/avr/include/stdlib.h ****    same as the old pointer, or a pointer to a completely different
+ 336:/usr/avr/include/stdlib.h ****    region.
+ 337:/usr/avr/include/stdlib.h **** 
+ 338:/usr/avr/include/stdlib.h ****    The contents of the returned region up to either the old or the new
+ 339:/usr/avr/include/stdlib.h ****    size value (whatever is less) will be identical to the contents of
+ 340:/usr/avr/include/stdlib.h ****    the old region, even in case a new region had to be allocated.
+ 341:/usr/avr/include/stdlib.h **** 
+ 342:/usr/avr/include/stdlib.h ****    It is acceptable to pass \c ptr as NULL, in which case realloc()
+ 343:/usr/avr/include/stdlib.h ****    will behave identical to malloc().
+ 344:/usr/avr/include/stdlib.h **** 
+ 345:/usr/avr/include/stdlib.h ****    If the new memory cannot be allocated, realloc() returns NULL, and
+ 346:/usr/avr/include/stdlib.h ****    the region at \c ptr will not be changed.
+ 347:/usr/avr/include/stdlib.h **** */
+ 348:/usr/avr/include/stdlib.h **** extern void *realloc(void *__ptr, size_t __size) __ATTR_MALLOC__;
+ 349:/usr/avr/include/stdlib.h **** 
+ 350:/usr/avr/include/stdlib.h **** extern double strtod(const char *__nptr, char **__endptr);
+ 351:/usr/avr/include/stdlib.h **** 
+ 352:/usr/avr/include/stdlib.h **** extern double atof(const char *__nptr);
+ 353:/usr/avr/include/stdlib.h **** 
+ 354:/usr/avr/include/stdlib.h **** /** Highest number that can be generated by rand(). */
+ 355:/usr/avr/include/stdlib.h **** #define	RAND_MAX 0x7FFF
+ 356:/usr/avr/include/stdlib.h **** 
+ 357:/usr/avr/include/stdlib.h **** /**
+ 358:/usr/avr/include/stdlib.h ****      The rand() function computes a sequence of pseudo-random integers in the
+ 359:/usr/avr/include/stdlib.h ****      range of 0 to \c RAND_MAX (as defined by the header file <stdlib.h>).
+ 360:/usr/avr/include/stdlib.h **** 
+ 361:/usr/avr/include/stdlib.h ****      The srand() function sets its argument \c seed as the seed for a new
+ 362:/usr/avr/include/stdlib.h ****      sequence of pseudo-random numbers to be returned by rand().  These
+ 363:/usr/avr/include/stdlib.h ****      sequences are repeatable by calling srand() with the same seed value.
+ 364:/usr/avr/include/stdlib.h **** 
+ 365:/usr/avr/include/stdlib.h ****      If no seed value is provided, the functions are automatically seeded with
+ 366:/usr/avr/include/stdlib.h ****      a value of 1.
+ 367:/usr/avr/include/stdlib.h **** 
+ 368:/usr/avr/include/stdlib.h ****      In compliance with the C standard, these functions operate on
+ 369:/usr/avr/include/stdlib.h ****      \c int arguments.  Since the underlying algorithm already uses
+ 370:/usr/avr/include/stdlib.h ****      32-bit calculations, this causes a loss of precision.  See
+ 371:/usr/avr/include/stdlib.h ****      \c random() for an alternate set of functions that retains full
+ 372:/usr/avr/include/stdlib.h ****      32-bit precision.
+ 373:/usr/avr/include/stdlib.h **** */
+ 374:/usr/avr/include/stdlib.h **** extern int rand(void);
+ 375:/usr/avr/include/stdlib.h **** /**
+ 376:/usr/avr/include/stdlib.h ****    Pseudo-random number generator seeding; see rand().
+ 377:/usr/avr/include/stdlib.h **** */
+ 378:/usr/avr/include/stdlib.h **** extern void srand(unsigned int __seed);
+ 379:/usr/avr/include/stdlib.h **** 
+ 380:/usr/avr/include/stdlib.h **** /**
+ 381:/usr/avr/include/stdlib.h ****    Variant of rand() that stores the context in the user-supplied
+ 382:/usr/avr/include/stdlib.h ****    variable located at \c ctx instead of a static library variable
+ 383:/usr/avr/include/stdlib.h ****    so the function becomes re-entrant.
+ 384:/usr/avr/include/stdlib.h **** */
+ 385:/usr/avr/include/stdlib.h **** extern int rand_r(unsigned long *__ctx);
+ 386:/usr/avr/include/stdlib.h **** /*@}*/
+ 387:/usr/avr/include/stdlib.h **** 
+ 388:/usr/avr/include/stdlib.h **** /*@{*/
+ 389:/usr/avr/include/stdlib.h **** /** \name Non-standard (i.e. non-ISO C) functions.
+ 390:/usr/avr/include/stdlib.h ****  \ingroup avr_stdlib
+ 391:/usr/avr/include/stdlib.h **** */
+ 392:/usr/avr/include/stdlib.h **** /**
+ 393:/usr/avr/include/stdlib.h ****    \brief Convert an integer to a string.
+ 394:/usr/avr/include/stdlib.h **** 
+ 395:/usr/avr/include/stdlib.h ****    The function itoa() converts the integer value from \c val into an
+ 396:/usr/avr/include/stdlib.h ****    ASCII representation that will be stored under \c s.  The caller
+ 397:/usr/avr/include/stdlib.h ****    is responsible for providing sufficient storage in \c s.
+ 398:/usr/avr/include/stdlib.h **** 
+ 399:/usr/avr/include/stdlib.h ****    \note The minimal size of the buffer \c s depends on the choice of
+ 400:/usr/avr/include/stdlib.h ****    radix. For example, if the radix is 2 (binary), you need to supply a buffer
+ 401:/usr/avr/include/stdlib.h ****    with a minimal length of 8 * sizeof (int) + 1 characters, i.e. one
+ 402:/usr/avr/include/stdlib.h ****    character for each bit plus one for the string terminator. Using a larger
+ 403:/usr/avr/include/stdlib.h ****    radix will require a smaller minimal buffer size.
+ 404:/usr/avr/include/stdlib.h **** 
+ 405:/usr/avr/include/stdlib.h ****    \warning If the buffer is too small, you risk a buffer overflow.
+ 406:/usr/avr/include/stdlib.h **** 
+ 407:/usr/avr/include/stdlib.h ****    Conversion is done using the \c radix as base, which may be a
+ 408:/usr/avr/include/stdlib.h ****    number between 2 (binary conversion) and up to 36.  If \c radix
+ 409:/usr/avr/include/stdlib.h ****    is greater than 10, the next digit after \c '9' will be the letter
+ 410:/usr/avr/include/stdlib.h ****    \c 'a'.
+ 411:/usr/avr/include/stdlib.h ****     
+ 412:/usr/avr/include/stdlib.h ****     If radix is 10 and val is negative, a minus sign will be prepended.
+ 413:/usr/avr/include/stdlib.h **** 
+ 414:/usr/avr/include/stdlib.h ****    The itoa() function returns the pointer passed as \c s.
+ 415:/usr/avr/include/stdlib.h **** */
+ 416:/usr/avr/include/stdlib.h **** #ifdef  __DOXYGEN__
+ 417:/usr/avr/include/stdlib.h **** extern char *itoa(int val, char *s, int radix);
+ 418:/usr/avr/include/stdlib.h **** #else
+ 419:/usr/avr/include/stdlib.h **** extern __inline__ __ATTR_GNU_INLINE__
+ 420:/usr/avr/include/stdlib.h **** char *itoa (int __val, char *__s, int __radix)
+ 421:/usr/avr/include/stdlib.h **** {
+ 422:/usr/avr/include/stdlib.h ****     if (!__builtin_constant_p (__radix)) {
+ 423:/usr/avr/include/stdlib.h **** 	extern char *__itoa (int, char *, int);
+ 424:/usr/avr/include/stdlib.h **** 	return __itoa (__val, __s, __radix);
+ 425:/usr/avr/include/stdlib.h ****     } else if (__radix < 2 || __radix > 36) {
+ 426:/usr/avr/include/stdlib.h **** 	*__s = 0;
+ 427:/usr/avr/include/stdlib.h **** 	return __s;
+ 428:/usr/avr/include/stdlib.h ****     } else {
+ 429:/usr/avr/include/stdlib.h **** 	extern char *__itoa_ncheck (int, char *, unsigned char);
+ 430:/usr/avr/include/stdlib.h **** 	return __itoa_ncheck (__val, __s, __radix);
+ 2121               	.LM319:
+ 2122 0156 4AE0      		ldi r20,lo8(10)
+ 2123 0158 BE01      		movw r22,r28
+ 2124 015a 6F5F      		subi r22,-1
+ 2125 015c 7F4F      		sbci r23,-1
+ 2126 015e C701      		movw r24,r14
+ 2127 0160 0E94 0000 		call __itoa_ncheck
+ 2128               	.LBE73:
+ 2129               	.LBE72:
+ 2131               	.Ltext8:
+ 282:main.c        **** 			uart_tx_s("\r\n");
+ 2133               	.LM320:
+ 2134 0164 0E94 0000 		call uart_tx_s
+ 283:main.c        **** 
+ 2136               	.LM321:
+ 2137 0168 80E0      		ldi r24,lo8(.LC0)
+ 2138 016a 90E0      		ldi r25,hi8(.LC0)
+ 2139 016c 0E94 0000 		call uart_tx_s
+ 285:main.c        **** 			{
+ 2141               	.LM322:
+ 2142 0170 83E0      		ldi r24,3
+ 2143 0172 E816      		cp r14,r24
+ 2144 0174 F104      		cpc r15,__zero_reg__
+ 2145 0176 01F0      		breq .L117
+ 2146 0178 97E0      		ldi r25,7
+ 2147 017a E916      		cp r14,r25
+ 2148 017c F104      		cpc r15,__zero_reg__
+ 2149 017e 01F4      		brne .+2
+ 2150 0180 00C0      		rjmp .L118
+ 2151 0182 A1E0      		ldi r26,1
+ 2152 0184 EA16      		cp r14,r26
+ 2153 0186 F104      		cpc r15,__zero_reg__
+ 2154 0188 01F0      		breq .+2
+ 2155 018a 00C0      		rjmp .L119
+ 288:main.c        **** 				img_value(_avg);
+ 2157               	.LM323:
+ 2158 018c 1092 0000 		sts _mode,__zero_reg__
+ 289:main.c        **** 				break;
+ 2160               	.LM324:
+ 2161 0190 8091 0000 		lds r24,_avg
+ 2162 0194 0E94 0000 		call img_value
+ 2163               	.L116:
+ 366:main.c        **** 		{
+ 2165               	.LM325:
+ 2166 0198 8091 0000 		lds r24,_mode
+ 366:main.c        **** 		{
+ 2168               	.LM326:
+ 2169 019c 8130      		cpi r24,lo8(1)
+ 2170 019e 01F0      		breq .+2
+ 2171 01a0 00C0      		rjmp .L141
+ 368:main.c        **** 			{
+ 2173               	.LM327:
+ 2174 01a2 E090 0000 		lds r14,_snake_update_ticks
+ 2175 01a6 F090 0000 		lds r15,_snake_update_ticks+1
+ 368:main.c        **** 			{
+ 2177               	.LM328:
+ 2178 01aa 8091 0000 		lds r24,_ms
+ 2179 01ae 9091 0000 		lds r25,_ms+1
+ 2180 01b2 A091 0000 		lds r26,_ms+2
+ 2181 01b6 B091 0000 		lds r27,_ms+3
+ 368:main.c        **** 			{
+ 2183               	.LM329:
+ 2184 01ba B501      		movw r22,r10
+ 2185 01bc A401      		movw r20,r8
+ 2186 01be 4E0D      		add r20,r14
+ 2187 01c0 5F1D      		adc r21,r15
+ 2188 01c2 611D      		adc r22,__zero_reg__
+ 2189 01c4 711D      		adc r23,__zero_reg__
+ 368:main.c        **** 			{
+ 2191               	.LM330:
+ 2192 01c6 8417      		cp r24,r20
+ 2193 01c8 9507      		cpc r25,r21
+ 2194 01ca A607      		cpc r26,r22
+ 2195 01cc B707      		cpc r27,r23
+ 2196 01ce 00F4      		brsh .+2
+ 2197 01d0 00C0      		rjmp .L112
+ 370:main.c        **** 				if(snake_update())
+ 2199               	.LM331:
+ 2200 01d2 8090 0000 		lds r8,_ms
+ 2201 01d6 9090 0000 		lds r9,_ms+1
+ 2202 01da A090 0000 		lds r10,_ms+2
+ 2203 01de B090 0000 		lds r11,_ms+3
+ 2204               	.LBB74:
+ 2205               	.LBB75:
+ 598:main.c        **** 	{
+ 2207               	.LM332:
+ 2208 01e2 8091 0000 		lds r24,_dir
+ 2209               	.LBB76:
+ 602:main.c        **** 		{
+ 2211               	.LM333:
+ 2212 01e6 C12C      		mov r12,__zero_reg__
+ 2213               	.LBE76:
+ 598:main.c        **** 	{
+ 2215               	.LM334:
+ 2216 01e8 8111      		cpse r24,__zero_reg__
+ 2217 01ea 00C0      		rjmp .L143
+ 2218               	.L192:
+ 2219               	.LBE75:
+ 2220               	.LBE74:
+ 404:main.c        **** 			}
+ 2222               	.LM335:
+ 2223 01ec 0E94 0000 		call led_update
+ 2224 01f0 00C0      		rjmp .L112
+ 2225               	.L117:
+ 293:main.c        **** 				snake_init();
+ 2227               	.LM336:
+ 2228 01f2 B1E0      		ldi r27,lo8(1)
+ 2229 01f4 B093 0000 		sts _mode,r27
+ 294:main.c        **** 				led_update();
+ 2231               	.LM337:
+ 2232 01f8 0E94 0000 		call snake_init
+ 2233               	.L197:
+ 336:main.c        **** 						break;
+ 2235               	.LM338:
+ 2236 01fc 0E94 0000 		call led_update
+ 337:main.c        **** 
+ 2238               	.LM339:
+ 2239 0200 00C0      		rjmp .L116
+ 2240               	.L118:
+ 299:main.c        **** 				_tetris_update_ticks = FALL_SPEED_DEFAULT;
+ 2242               	.LM340:
+ 2243 0202 E2E0      		ldi r30,lo8(2)
+ 2244 0204 E093 0000 		sts _mode,r30
+ 300:main.c        **** 				field_clear();
+ 2246               	.LM341:
+ 2247 0208 2EE5      		ldi r18,lo8(94)
+ 2248 020a 31E0      		ldi r19,lo8(1)
+ 2249 020c 3093 0000 		sts _tetris_update_ticks+1,r19
+ 2250 0210 2093 0000 		sts _tetris_update_ticks,r18
+ 301:main.c        **** 				led_clear(&black);
+ 2252               	.LM342:
+ 2253 0214 0E94 0000 		call field_clear
+ 302:main.c        **** 				piece_next();
+ 2255               	.LM343:
+ 2256 0218 0E94 0000 		call led_clear.constprop.0
+ 303:main.c        **** 				break;
+ 2258               	.LM344:
+ 2259 021c 0E94 0000 		call piece_next
+ 304:main.c        **** 
+ 2261               	.LM345:
+ 2262 0220 00C0      		rjmp .L116
+ 2263               	.L119:
+ 307:main.c        **** 				{
+ 2265               	.LM346:
+ 2266 0222 8091 0000 		lds r24,_mode
+ 307:main.c        **** 				{
+ 2268               	.LM347:
+ 2269 0226 8130      		cpi r24,lo8(1)
+ 2270 0228 01F4      		brne .L120
+ 2271 022a 36E0      		ldi r19,6
+ 2272 022c E316      		cp r14,r19
+ 2273 022e F104      		cpc r15,__zero_reg__
+ 2274 0230 01F0      		breq .L121
+ 2275 0232 00F4      		brsh .L122
+ 2276 0234 52E0      		ldi r21,2
+ 2277 0236 E516      		cp r14,r21
+ 2278 0238 F104      		cpc r15,__zero_reg__
+ 2279 023a 01F0      		breq .L123
+ 2280 023c 84E0      		ldi r24,4
+ 2281 023e E816      		cp r14,r24
+ 2282 0240 F104      		cpc r15,__zero_reg__
+ 2283 0242 01F0      		breq .+2
+ 2284 0244 00C0      		rjmp .L116
+ 324:main.c        **** 						break;
+ 2286               	.LM348:
+ 2287 0246 4092 0000 		sts _dir,r4
+ 325:main.c        **** 					}
+ 2289               	.LM349:
+ 2290 024a 00C0      		rjmp .L116
+ 2291               	.L122:
+ 2292 024c 98E0      		ldi r25,8
+ 2293 024e E916      		cp r14,r25
+ 2294 0250 F104      		cpc r15,__zero_reg__
+ 2295 0252 01F0      		breq .+2
+ 2296 0254 00C0      		rjmp .L116
+ 320:main.c        **** 						break;
+ 2298               	.LM350:
+ 2299 0256 B2E0      		ldi r27,lo8(2)
+ 2300 0258 B093 0000 		sts _dir,r27
+ 321:main.c        **** 
+ 2302               	.LM351:
+ 2303 025c 00C0      		rjmp .L116
+ 2304               	.L123:
+ 312:main.c        **** 						break;
+ 2306               	.LM352:
+ 2307 025e 8093 0000 		sts _dir,r24
+ 313:main.c        **** 
+ 2309               	.LM353:
+ 2310 0262 00C0      		rjmp .L116
+ 2311               	.L121:
+ 316:main.c        **** 						break;
+ 2313               	.LM354:
+ 2314 0264 A4E0      		ldi r26,lo8(4)
+ 2315 0266 A093 0000 		sts _dir,r26
+ 317:main.c        **** 
+ 2317               	.LM355:
+ 2318 026a 00C0      		rjmp .L116
+ 2319               	.L120:
+ 328:main.c        **** 				{
+ 2321               	.LM356:
+ 2322 026c 8230      		cpi r24,lo8(2)
+ 2323 026e 01F0      		breq .+2
+ 2324 0270 00C0      		rjmp .L116
+ 2325 0272 E6E0      		ldi r30,6
+ 2326 0274 EE16      		cp r14,r30
+ 2327 0276 F104      		cpc r15,__zero_reg__
+ 2328 0278 01F4      		brne .+2
+ 2329 027a 00C0      		rjmp .L127
+ 2330 027c 00F4      		brsh .L128
+ 2331 027e 22E0      		ldi r18,2
+ 2332 0280 E216      		cp r14,r18
+ 2333 0282 F104      		cpc r15,__zero_reg__
+ 2334 0284 01F0      		breq .L129
+ 2335 0286 34E0      		ldi r19,4
+ 2336 0288 E316      		cp r14,r19
+ 2337 028a F104      		cpc r15,__zero_reg__
+ 2338 028c 01F0      		breq .+2
+ 2339 028e 00C0      		rjmp .L116
+ 354:main.c        **** 						piece_move_left();
+ 2341               	.LM357:
+ 2342 0290 0E94 0000 		call piece_undraw
+ 2343               	.LBB81:
+ 2344               	.LBB82:
+ 774:main.c        **** 	if(!piece_valid())
+ 2346               	.LM358:
+ 2347 0294 F090 0000 		lds r15,_piece
+ 774:main.c        **** 	if(!piece_valid())
+ 2349               	.LM359:
+ 2350 0298 8FEF      		ldi r24,lo8(-1)
+ 2351 029a 00C0      		rjmp .L196
+ 2352               	.L128:
+ 2353               	.LBE82:
+ 2354               	.LBE81:
+ 2355 029c 48E0      		ldi r20,8
+ 2356 029e E416      		cp r14,r20
+ 2357 02a0 F104      		cpc r15,__zero_reg__
+ 2358 02a2 01F0      		breq .+2
+ 2359 02a4 00C0      		rjmp .L116
+ 347:main.c        **** 						piece_rotate_left();
+ 2361               	.LM360:
+ 2362 02a6 0E94 0000 		call piece_undraw
+ 2363               	.LBB84:
+ 2364               	.LBB63:
+ 757:main.c        **** 	{
+ 2366               	.LM361:
+ 2367 02aa 8091 0000 		lds r24,_piece+2
+ 2368 02ae 9FEF      		ldi r25,lo8(-1)
+ 2369 02b0 980F      		add r25,r24
+ 757:main.c        **** 	{
+ 2371               	.LM362:
+ 2372 02b2 8823      		tst r24
+ 2373 02b4 01F0      		breq .L138
+ 2374 02b6 9093 0000 		sts _piece+2,r25
+ 2375               	.L139:
+ 762:main.c        **** 	{
+ 2377               	.LM363:
+ 2378 02ba 0E94 0000 		call piece_valid
+ 762:main.c        **** 	{
+ 2380               	.LM364:
+ 2381 02be 8111      		cpse r24,__zero_reg__
+ 2382 02c0 00C0      		rjmp .L135
+ 764:main.c        **** 		{
+ 2384               	.LM365:
+ 2385 02c2 8091 0000 		lds r24,_piece+2
+ 2386 02c6 91E0      		ldi r25,lo8(1)
+ 2387 02c8 980F      		add r25,r24
+ 764:main.c        **** 		{
+ 2389               	.LM366:
+ 2390 02ca 8330      		cpi r24,lo8(3)
+ 2391 02cc 01F4      		brne .L193
+ 766:main.c        **** 		}
+ 2393               	.LM367:
+ 2394 02ce 1092 0000 		sts _piece+2,__zero_reg__
+ 2395 02d2 00C0      		rjmp .L135
+ 2396               	.L129:
+ 2397               	.LBE63:
+ 2398               	.LBE84:
+ 333:main.c        **** 						piece_rotate_right();
+ 2400               	.LM368:
+ 2401 02d4 0E94 0000 		call piece_undraw
+ 2402               	.LBB85:
+ 2403               	.LBB86:
+ 739:main.c        **** 	{
+ 2405               	.LM369:
+ 2406 02d8 8091 0000 		lds r24,_piece+2
+ 2407 02dc 91E0      		ldi r25,lo8(1)
+ 2408 02de 980F      		add r25,r24
+ 739:main.c        **** 	{
+ 2410               	.LM370:
+ 2411 02e0 8330      		cpi r24,lo8(3)
+ 2412 02e2 01F0      		breq .L132
+ 2413 02e4 9093 0000 		sts _piece+2,r25
+ 2414               	.L133:
+ 744:main.c        **** 	{
+ 2416               	.LM371:
+ 2417 02e8 0E94 0000 		call piece_valid
+ 744:main.c        **** 	{
+ 2419               	.LM372:
+ 2420 02ec 8111      		cpse r24,__zero_reg__
+ 2421 02ee 00C0      		rjmp .L135
+ 746:main.c        **** 		{
+ 2423               	.LM373:
+ 2424 02f0 8091 0000 		lds r24,_piece+2
+ 2425 02f4 9FEF      		ldi r25,lo8(-1)
+ 2426 02f6 980F      		add r25,r24
+ 746:main.c        **** 		{
+ 2428               	.LM374:
+ 2429 02f8 8823      		tst r24
+ 2430 02fa 01F0      		breq .L136
+ 2431               	.L193:
+ 2432               	.LBE86:
+ 2433               	.LBE85:
+ 2434               	.LBB88:
+ 2435               	.LBB64:
+ 764:main.c        **** 		{
+ 2437               	.LM375:
+ 2438 02fc 9093 0000 		sts _piece+2,r25
+ 2439 0300 00C0      		rjmp .L135
+ 2440               	.L132:
+ 2441               	.LBE64:
+ 2442               	.LBE88:
+ 2443               	.LBB89:
+ 2444               	.LBB87:
+ 741:main.c        **** 	}
+ 2446               	.LM376:
+ 2447 0302 1092 0000 		sts _piece+2,__zero_reg__
+ 2448 0306 00C0      		rjmp .L133
+ 2449               	.L136:
+ 748:main.c        **** 		}
+ 2451               	.LM377:
+ 2452 0308 4092 0000 		sts _piece+2,r4
+ 2453               	.L135:
+ 2454               	.LBE87:
+ 2455               	.LBE89:
+ 335:main.c        **** 						led_update();
+ 2457               	.LM378:
+ 2458 030c 0E94 0000 		call piece_draw
+ 2459 0310 00C0      		rjmp .L197
+ 2460               	.L127:
+ 340:main.c        **** 						piece_move_right();
+ 2462               	.LM379:
+ 2463 0312 0E94 0000 		call piece_undraw
+ 2464               	.LBB90:
+ 2465               	.LBB91:
+ 783:main.c        **** 	if(!piece_valid())
+ 2467               	.LM380:
+ 2468 0316 F090 0000 		lds r15,_piece
+ 783:main.c        **** 	if(!piece_valid())
+ 2470               	.LM381:
+ 2471 031a 81E0      		ldi r24,lo8(1)
+ 2472               	.L196:
+ 2473               	.LBE91:
+ 2474               	.LBE90:
+ 2475               	.LBB92:
+ 2476               	.LBB83:
+ 774:main.c        **** 	if(!piece_valid())
+ 2478               	.LM382:
+ 2479 031c 8F0D      		add r24,r15
+ 2480 031e 8093 0000 		sts _piece,r24
+ 775:main.c        **** 	{
+ 2482               	.LM383:
+ 2483 0322 0E94 0000 		call piece_valid
+ 775:main.c        **** 	{
+ 2485               	.LM384:
+ 2486 0326 8111      		cpse r24,__zero_reg__
+ 2487 0328 00C0      		rjmp .L135
+ 777:main.c        **** 	}
+ 2489               	.LM385:
+ 2490 032a F092 0000 		sts _piece,r15
+ 2491 032e 00C0      		rjmp .L135
+ 2492               	.L138:
+ 2493               	.LBE83:
+ 2494               	.LBE92:
+ 2495               	.LBB93:
+ 2496               	.LBB65:
+ 759:main.c        **** 	}
+ 2498               	.LM386:
+ 2499 0330 4092 0000 		sts _piece+2,r4
+ 2500 0334 00C0      		rjmp .L139
+ 2501               	.L145:
+ 2502               	.LBE65:
+ 2503               	.LBE93:
+ 2504               	.LBB94:
+ 2505               	.LBB79:
+ 2506               	.LBB77:
+ 604:main.c        **** 		}
+ 2508               	.LM387:
+ 2509 0336 EC2D      		mov r30,r12
+ 2510 0338 F0E0      		ldi r31,0
+ 2511 033a EE0F      		lsl r30
+ 2512 033c FF1F      		rol r31
+ 2513 033e E050      		subi r30,lo8(-(_snake))
+ 2514 0340 F040      		sbci r31,hi8(-(_snake))
+ 604:main.c        **** 		}
+ 2516               	.LM388:
+ 2517 0342 40E0      		ldi r20,lo8(black)
+ 2518 0344 50E0      		ldi r21,hi8(black)
+ 2519 0346 6181      		ldd r22,Z+1
+ 2520 0348 8081      		ld r24,Z
+ 2521 034a 0E94 0000 		call led_pixel
+ 602:main.c        **** 		{
+ 2523               	.LM389:
+ 2524 034e C394      		inc r12
+ 2525               	.L143:
+ 602:main.c        **** 		{
+ 2527               	.LM390:
+ 2528 0350 D090 0000 		lds r13,_snake+32
+ 602:main.c        **** 		{
+ 2530               	.LM391:
+ 2531 0354 CD14      		cp r12,r13
+ 2532 0356 00F0      		brlo .L145
+ 608:main.c        **** 
+ 2534               	.LM392:
+ 2535 0358 40E0      		ldi r20,lo8(black)
+ 2536 035a 50E0      		ldi r21,hi8(black)
+ 2537 035c 6091 0000 		lds r22,_food+1
+ 2538 0360 8091 0000 		lds r24,_food
+ 2539 0364 0E94 0000 		call led_pixel
+ 610:main.c        **** 		{
+ 2541               	.LM393:
+ 2542 0368 40E0      		ldi r20,0
+ 610:main.c        **** 		{
+ 2544               	.LM394:
+ 2545 036a 8D2D      		mov r24,r13
+ 2546 036c 8150      		subi r24,1
+ 2547 036e 990B      		sbc r25,r25
+ 2548 0370 9C01      		movw r18,r24
+ 2549               	.L146:
+ 610:main.c        **** 		{
+ 2551               	.LM395:
+ 2552 0372 842F      		mov r24,r20
+ 2553 0374 90E0      		ldi r25,0
+ 610:main.c        **** 		{
+ 2555               	.LM396:
+ 2556 0376 8217      		cp r24,r18
+ 2557 0378 9307      		cpc r25,r19
+ 2558 037a 04F0      		brlt .L147
+ 616:main.c        **** 
+ 2560               	.LM397:
+ 2561 037c 0E94 0000 		call snake_advance
+ 618:main.c        **** 			_snake.blocks[_snake.len - 1].x >= LED_SIZE ||
+ 2563               	.LM398:
+ 2564 0380 E091 0000 		lds r30,_snake+32
+ 618:main.c        **** 			_snake.blocks[_snake.len - 1].x >= LED_SIZE ||
+ 2566               	.LM399:
+ 2567 0384 AE2F      		mov r26,r30
+ 2568 0386 A150      		subi r26,1
+ 2569 0388 BB0B      		sbc r27,r27
+ 2570 038a 9D01      		movw r18,r26
+ 618:main.c        **** 			_snake.blocks[_snake.len - 1].x >= LED_SIZE ||
+ 2572               	.LM400:
+ 2573 038c AA0F      		lsl r26
+ 2574 038e BB1F      		rol r27
+ 2575 0390 A050      		subi r26,lo8(-(_snake))
+ 2576 0392 B040      		sbci r27,hi8(-(_snake))
+ 2577 0394 9C91      		ld r25,X
+ 618:main.c        **** 			_snake.blocks[_snake.len - 1].x >= LED_SIZE ||
+ 2579               	.LM401:
+ 2580 0396 9031      		cpi r25,lo8(16)
+ 2581 0398 00F4      		brsh .L148
+ 620:main.c        **** 			_snake.blocks[_snake.len - 1].y >= LED_SIZE)
+ 2583               	.LM402:
+ 2584 039a 1196      		adiw r26,1
+ 2585 039c 4C91      		ld r20,X
+ 626:main.c        **** 		{
+ 2587               	.LM403:
+ 2588 039e 80E0      		ldi r24,0
+ 620:main.c        **** 			_snake.blocks[_snake.len - 1].y >= LED_SIZE)
+ 2590               	.LM404:
+ 2591 03a0 4031      		cpi r20,lo8(16)
+ 2592 03a2 00F0      		brlo .L149
+ 2593               	.L148:
+ 2594               	.LBE77:
+ 2595               	.LBE79:
+ 2596               	.LBE94:
+ 373:main.c        **** 				}
+ 2598               	.LM405:
+ 2599 03a4 0E94 0000 		call snake_init
+ 2600 03a8 00C0      		rjmp .L192
+ 2601               	.L147:
+ 2602               	.LBB95:
+ 2603               	.LBB80:
+ 2604               	.LBB78:
+ 612:main.c        **** 			_snake.blocks[i].y = _snake.blocks[i + 1].y;
+ 2606               	.LM406:
+ 2607 03aa DC01      		movw r26,r24
+ 2608 03ac AA0F      		lsl r26
+ 2609 03ae BB1F      		rol r27
+ 2610 03b0 A050      		subi r26,lo8(-(_snake+2))
+ 2611 03b2 B040      		sbci r27,hi8(-(_snake+2))
+ 2612 03b4 5C91      		ld r21,X
+ 612:main.c        **** 			_snake.blocks[i].y = _snake.blocks[i + 1].y;
+ 2614               	.LM407:
+ 2615 03b6 880F      		lsl r24
+ 2616 03b8 991F      		rol r25
+ 2617 03ba FC01      		movw r30,r24
+ 2618 03bc E050      		subi r30,lo8(-(_snake))
+ 2619 03be F040      		sbci r31,hi8(-(_snake))
+ 2620 03c0 5083      		st Z,r21
+ 613:main.c        **** 		}
+ 2622               	.LM408:
+ 2623 03c2 1196      		adiw r26,1
+ 2624 03c4 8C91      		ld r24,X
+ 613:main.c        **** 		}
+ 2626               	.LM409:
+ 2627 03c6 8183      		std Z+1,r24
+ 610:main.c        **** 		{
+ 2629               	.LM410:
+ 2630 03c8 4F5F      		subi r20,lo8(-(1))
+ 2631 03ca 00C0      		rjmp .L146
+ 2632               	.L151:
+ 628:main.c        **** 				_snake.blocks[_snake.len - 1].y == _snake.blocks[i].y)
+ 2634               	.LM411:
+ 2635 03cc AA0F      		lsl r26
+ 2636 03ce BB1F      		rol r27
+ 2637 03d0 A050      		subi r26,lo8(-(_snake))
+ 2638 03d2 B040      		sbci r27,hi8(-(_snake))
+ 628:main.c        **** 				_snake.blocks[_snake.len - 1].y == _snake.blocks[i].y)
+ 2640               	.LM412:
+ 2641 03d4 5C91      		ld r21,X
+ 2642 03d6 9513      		cpse r25,r21
+ 2643 03d8 00C0      		rjmp .L150
+ 628:main.c        **** 				_snake.blocks[_snake.len - 1].y == _snake.blocks[i].y)
+ 2645               	.LM413:
+ 2646 03da 1196      		adiw r26,1
+ 2647 03dc 5C91      		ld r21,X
+ 2648 03de 4517      		cp r20,r21
+ 2649 03e0 01F0      		breq .L148
+ 2650               	.L150:
+ 626:main.c        **** 		{
+ 2652               	.LM414:
+ 2653 03e2 8F5F      		subi r24,lo8(-(1))
+ 2654               	.L149:
+ 626:main.c        **** 		{
+ 2656               	.LM415:
+ 2657 03e4 A82F      		mov r26,r24
+ 2658 03e6 B0E0      		ldi r27,0
+ 626:main.c        **** 		{
+ 2660               	.LM416:
+ 2661 03e8 8217      		cp r24,r18
+ 2662 03ea 1306      		cpc __zero_reg__,r19
+ 2663 03ec 04F0      		brlt .L151
+ 635:main.c        **** 			_food.y == _snake.blocks[_snake.len - 1].y)
+ 2665               	.LM417:
+ 2666 03ee 8091 0000 		lds r24,_food
+ 2667 03f2 9813      		cpse r25,r24
+ 2668 03f4 00C0      		rjmp .L152
+ 635:main.c        **** 			_food.y == _snake.blocks[_snake.len - 1].y)
+ 2670               	.LM418:
+ 2671 03f6 8091 0000 		lds r24,_food+1
+ 2672 03fa 4813      		cpse r20,r24
+ 2673 03fc 00C0      		rjmp .L152
+ 638:main.c        **** 			{
+ 2675               	.LM419:
+ 2676 03fe EF30      		cpi r30,lo8(15)
+ 2677 0400 00F4      		brsh .L153
+ 640:main.c        **** 				_snake.blocks[_snake.len - 1].x =
+ 2679               	.LM420:
+ 2680 0402 EF5F      		subi r30,lo8(-(1))
+ 2681 0404 E093 0000 		sts _snake+32,r30
+ 642:main.c        **** 
+ 2683               	.LM421:
+ 2684 0408 F0E0      		ldi r31,0
+ 642:main.c        **** 
+ 2686               	.LM422:
+ 2687 040a DF01      		movw r26,r30
+ 2688 040c AA0F      		lsl r26
+ 2689 040e BB1F      		rol r27
+ 2690 0410 A050      		subi r26,lo8(-(_snake-4))
+ 2691 0412 B040      		sbci r27,hi8(-(_snake-4))
+ 2692 0414 8C91      		ld r24,X
+ 641:main.c        **** 					_snake.blocks[_snake.len - 2].x;
+ 2694               	.LM423:
+ 2695 0416 EE0F      		lsl r30
+ 2696 0418 FF1F      		rol r31
+ 2697 041a E050      		subi r30,lo8(-(_snake-2))
+ 2698 041c F040      		sbci r31,hi8(-(_snake-2))
+ 2699 041e 8083      		st Z,r24
+ 645:main.c        **** 
+ 2701               	.LM424:
+ 2702 0420 1196      		adiw r26,1
+ 2703 0422 8C91      		ld r24,X
+ 644:main.c        **** 					_snake.blocks[_snake.len - 2].y;
+ 2705               	.LM425:
+ 2706 0424 8183      		std Z+1,r24
+ 647:main.c        **** 			}
+ 2708               	.LM426:
+ 2709 0426 0E94 0000 		call snake_advance
+ 2710               	.L153:
+ 650:main.c        **** 			{
+ 2712               	.LM427:
+ 2713 042a B5E1      		ldi r27,21
+ 2714 042c EB16      		cp r14,r27
+ 2715 042e F104      		cpc r15,__zero_reg__
+ 2716 0430 00F0      		brlo .L154
+ 652:main.c        **** 			}
+ 2718               	.LM428:
+ 2719 0432 E1E0      		ldi r30,1
+ 2720 0434 EE1A      		sub r14,r30
+ 2721 0436 F108      		sbc r15,__zero_reg__
+ 2722 0438 F092 0000 		sts _snake_update_ticks+1,r15
+ 2723 043c E092 0000 		sts _snake_update_ticks,r14
+ 2724               	.L154:
+ 655:main.c        **** 			random_food();
+ 2726               	.LM429:
+ 2727 0440 8091 0000 		lds r24,_food+2
+ 2728 0444 8093 0000 		sts _snake+33,r24
+ 656:main.c        **** 		}
+ 2730               	.LM430:
+ 2731 0448 0E94 0000 		call random_food
+ 2732               	.L152:
+ 659:main.c        **** 		draw_food();
+ 2734               	.LM431:
+ 2735 044c 0E94 0000 		call draw_snake
+ 660:main.c        **** 	}
+ 2737               	.LM432:
+ 2738 0450 0E94 0000 		call draw_food
+ 2739 0454 00C0      		rjmp .L192
+ 2740               	.L141:
+ 2741               	.LBE78:
+ 2742               	.LBE80:
+ 2743               	.LBE95:
+ 379:main.c        **** 		{
+ 2745               	.LM433:
+ 2746 0456 8230      		cpi r24,lo8(2)
+ 2747 0458 01F0      		breq .+2
+ 2748 045a 00C0      		rjmp .L112
+ 381:main.c        **** 			{
+ 2750               	.LM434:
+ 2751 045c 2091 0000 		lds r18,_tetris_update_ticks
+ 2752 0460 3091 0000 		lds r19,_tetris_update_ticks+1
+ 381:main.c        **** 			{
+ 2754               	.LM435:
+ 2755 0464 8091 0000 		lds r24,_ms
+ 2756 0468 9091 0000 		lds r25,_ms+1
+ 2757 046c A091 0000 		lds r26,_ms+2
+ 2758 0470 B091 0000 		lds r27,_ms+3
+ 381:main.c        **** 			{
+ 2760               	.LM436:
+ 2761 0474 B501      		movw r22,r10
+ 2762 0476 A401      		movw r20,r8
+ 2763 0478 420F      		add r20,r18
+ 2764 047a 531F      		adc r21,r19
+ 2765 047c 611D      		adc r22,__zero_reg__
+ 2766 047e 711D      		adc r23,__zero_reg__
+ 381:main.c        **** 			{
+ 2768               	.LM437:
+ 2769 0480 8417      		cp r24,r20
+ 2770 0482 9507      		cpc r25,r21
+ 2771 0484 A607      		cpc r26,r22
+ 2772 0486 B707      		cpc r27,r23
+ 2773 0488 00F4      		brsh .+2
+ 2774 048a 00C0      		rjmp .L112
+ 383:main.c        **** 				piece_undraw();
+ 2776               	.LM438:
+ 2777 048c 8090 0000 		lds r8,_ms
+ 2778 0490 9090 0000 		lds r9,_ms+1
+ 2779 0494 A090 0000 		lds r10,_ms+2
+ 2780 0498 B090 0000 		lds r11,_ms+3
+ 384:main.c        **** 				++_piece.y;
+ 2782               	.LM439:
+ 2783 049c 0E94 0000 		call piece_undraw
+ 385:main.c        **** 				if(!piece_valid())
+ 2785               	.LM440:
+ 2786 04a0 F090 0000 		lds r15,_piece+1
+ 385:main.c        **** 				if(!piece_valid())
+ 2788               	.LM441:
+ 2789 04a4 EE24      		clr r14
+ 2790 04a6 E394      		inc r14
+ 2791 04a8 EF0C      		add r14,r15
+ 2792 04aa E092 0000 		sts _piece+1,r14
+ 386:main.c        **** 				{
+ 2794               	.LM442:
+ 2795 04ae 0E94 0000 		call piece_valid
+ 386:main.c        **** 				{
+ 2797               	.LM443:
+ 2798 04b2 8111      		cpse r24,__zero_reg__
+ 2799 04b4 00C0      		rjmp .L155
+ 388:main.c        **** 					{
+ 2801               	.LM444:
+ 2802 04b6 1E14      		cp __zero_reg__,r14
+ 2803 04b8 04F0      		brlt .L156
+ 390:main.c        **** 						piece_next();
+ 2805               	.LM445:
+ 2806 04ba 2EE5      		ldi r18,lo8(94)
+ 2807 04bc 31E0      		ldi r19,lo8(1)
+ 2808 04be 3093 0000 		sts _tetris_update_ticks+1,r19
+ 2809 04c2 2093 0000 		sts _tetris_update_ticks,r18
+ 391:main.c        **** 						field_clear();
+ 2811               	.LM446:
+ 2812 04c6 0E94 0000 		call piece_next
+ 392:main.c        **** 					}
+ 2814               	.LM447:
+ 2815 04ca 0E94 0000 		call field_clear
+ 2816               	.L155:
+ 403:main.c        **** 				led_update();
+ 2818               	.LM448:
+ 2819 04ce 0E94 0000 		call piece_draw
+ 2820 04d2 00C0      		rjmp .L192
+ 2821               	.L156:
+ 396:main.c        **** 						piece_to_field();
+ 2823               	.LM449:
+ 2824 04d4 F092 0000 		sts _piece+1,r15
+ 2825               	.LBB96:
+ 2826               	.LBB69:
+ 854:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 2828               	.LM450:
+ 2829 04d8 E091 0000 		lds r30,_piece+2
+ 854:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 2831               	.LM451:
+ 2832 04dc 8091 0000 		lds r24,_piece+3
+ 854:main.c        **** 	for(bit = 0x8000; bit > 0; bit >>= 1)
+ 2834               	.LM452:
+ 2835 04e0 EE0F      		lsl r30
+ 2836 04e2 FF0B      		sbc r31,r31
+ 2837 04e4 589E      		mul r5,r24
+ 2838 04e6 E00D      		add r30,r0
+ 2839 04e8 F11D      		adc r31,r1
+ 2840 04ea 1124      		clr __zero_reg__
+ 2841 04ec E050      		subi r30,lo8(-(_pieces))
+ 2842 04ee F040      		sbci r31,hi8(-(_pieces))
+ 2843 04f0 4081      		ld r20,Z
+ 2844 04f2 5181      		ldd r21,Z+1
+ 2845 04f4 5F87      		std Y+15,r21
+ 2846 04f6 4E87      		std Y+14,r20
+ 2847 04f8 90E1      		ldi r25,lo8(16)
+ 2848 04fa E92E      		mov r14,r25
+ 2849 04fc F12C      		mov r15,__zero_reg__
+ 853:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 2851               	.LM453:
+ 2852 04fe 212C      		mov r2,__zero_reg__
+ 853:main.c        **** 	blocks = _pieces[_piece.type].blocks[_piece.rotation];
+ 2854               	.LM454:
+ 2855 0500 312C      		mov r3,__zero_reg__
+ 855:main.c        **** 	{
+ 2857               	.LM455:
+ 2858 0502 C12C      		mov r12,__zero_reg__
+ 2859 0504 20E8      		ldi r18,lo8(-128)
+ 2860 0506 D22E      		mov r13,r18
+ 2861               	.L159:
+ 857:main.c        **** 		{
+ 2863               	.LM456:
+ 2864 0508 8E85      		ldd r24,Y+14
+ 2865 050a 9F85      		ldd r25,Y+15
+ 2866 050c 8C21      		and r24,r12
+ 2867 050e 9D21      		and r25,r13
+ 857:main.c        **** 		{
+ 2869               	.LM457:
+ 2870 0510 892B      		or r24,r25
+ 2871 0512 01F0      		breq .L157
+ 2872               	.LBB68:
+ 860:main.c        **** 			y = _piece.y + row;
+ 2874               	.LM458:
+ 2875 0514 8091 0000 		lds r24,_piece
+ 2876 0518 830D      		add r24,r3
+ 861:main.c        **** 			_field[y * LED_SIZE + x] = _piece.type + 1;
+ 2878               	.LM459:
+ 2879 051a 6091 0000 		lds r22,_piece+1
+ 2880 051e 620D      		add r22,r2
+ 862:main.c        **** 			led_pixel(x, y, &_pieces[_piece.type].color);
+ 2882               	.LM460:
+ 2883 0520 4091 0000 		lds r20,_piece+3
+ 862:main.c        **** 			led_pixel(x, y, &_pieces[_piece.type].color);
+ 2885               	.LM461:
+ 2886 0524 50E1      		ldi r21,lo8(16)
+ 2887 0526 6502      		muls r22,r21
+ 2888 0528 F001      		movw r30,r0
+ 2889 052a 1124      		clr __zero_reg__
+ 862:main.c        **** 			led_pixel(x, y, &_pieces[_piece.type].color);
+ 2891               	.LM462:
+ 2892 052c E050      		subi r30,lo8(-(_field))
+ 2893 052e F040      		sbci r31,hi8(-(_field))
+ 2894 0530 E80F      		add r30,r24
+ 2895 0532 F11D      		adc r31,__zero_reg__
+ 2896 0534 87FD      		sbrc r24,7
+ 2897 0536 FA95      		dec r31
+ 862:main.c        **** 			led_pixel(x, y, &_pieces[_piece.type].color);
+ 2899               	.LM463:
+ 2900 0538 91E0      		ldi r25,lo8(1)
+ 2901 053a 940F      		add r25,r20
+ 862:main.c        **** 			led_pixel(x, y, &_pieces[_piece.type].color);
+ 2903               	.LM464:
+ 2904 053c 9083      		st Z,r25
+ 863:main.c        **** 		}
+ 2906               	.LM465:
+ 2907 053e 549E      		mul r5,r20
+ 2908 0540 A001      		movw r20,r0
+ 2909 0542 1124      		clr __zero_reg__
+ 2910 0544 4050      		subi r20,lo8(-(_pieces+8))
+ 2911 0546 5040      		sbci r21,hi8(-(_pieces+8))
+ 2912 0548 0E94 0000 		call led_pixel
+ 2913               	.L157:
+ 2914               	.LBE68:
+ 866:main.c        **** 		{
+ 2916               	.LM466:
+ 2917 054c 3394      		inc r3
+ 866:main.c        **** 		{
+ 2919               	.LM467:
+ 2920 054e 84E0      		ldi r24,lo8(4)
+ 2921 0550 3812      		cpse r3,r24
+ 2922 0552 00C0      		rjmp .L158
+ 869:main.c        **** 		}
+ 2924               	.LM468:
+ 2925 0554 2394      		inc r2
+ 868:main.c        **** 			++row;
+ 2927               	.LM469:
+ 2928 0556 312C      		mov r3,__zero_reg__
+ 2929               	.L158:
+ 855:main.c        **** 	{
+ 2931               	.LM470:
+ 2932 0558 D694      		lsr r13
+ 2933 055a C794      		ror r12
+ 2934 055c 91E0      		ldi r25,1
+ 2935 055e E91A      		sub r14,r25
+ 2936 0560 F108      		sbc r15,__zero_reg__
+ 855:main.c        **** 	{
+ 2938               	.LM471:
+ 2939 0562 01F4      		brne .L159
+ 2940               	.LBE69:
+ 2941               	.LBE96:
+ 2942               	.LBB97:
+ 2943               	.LBB98:
+ 901:main.c        **** }
+ 902:main.c        **** 
+ 903:main.c        **** static void field_rows(void)
+ 904:main.c        **** {
+ 905:main.c        **** 	int8_t x, y, i, j, v;
+ 906:main.c        **** 	--_piece.y;
+ 2945               	.LM472:
+ 2946 0564 8091 0000 		lds r24,_piece+1
+ 2947 0568 8150      		subi r24,lo8(-(-1))
+ 2948 056a 8093 0000 		sts _piece+1,r24
+ 2949 056e 90E0      		ldi r25,0
+ 2950 0570 80E0      		ldi r24,0
+ 907:main.c        **** 	v = 0;
+ 2952               	.LM473:
+ 2953 0572 30E0      		ldi r19,0
+ 908:main.c        **** 	for(y = 0; y < LED_SIZE; ++y)
+ 2955               	.LM474:
+ 2956 0574 40E0      		ldi r20,0
+ 2957               	.L160:
+ 2958 0576 FC01      		movw r30,r24
+ 2959 0578 E050      		subi r30,lo8(-(_field))
+ 2960 057a F040      		sbci r31,hi8(-(_field))
+ 2961               	.LBE98:
+ 2962               	.LBE97:
+ 2963               	.LBB101:
+ 2964               	.LBB70:
+ 868:main.c        **** 			++row;
+ 2966               	.LM475:
+ 2967 057c 20E1      		ldi r18,lo8(16)
+ 2968               	.L162:
+ 2969               	.LBE70:
+ 2970               	.LBE101:
+ 2971               	.LBB102:
+ 2972               	.LBB99:
+ 909:main.c        **** 	{
+ 910:main.c        **** 		for(x = 0; x < LED_SIZE; ++x)
+ 911:main.c        **** 		{
+ 912:main.c        **** 			if(!_field[y * LED_SIZE + x])
+ 2974               	.LM476:
+ 2975 057e 5191      		ld r21,Z+
+ 2977               	.LM477:
+ 2978 0580 5523      		tst r21
+ 2979 0582 01F0      		breq .L161
+ 2980 0584 2150      		subi r18,lo8(-(-1))
+ 910:main.c        **** 		{
+ 2982               	.LM478:
+ 2983 0586 01F4      		brne .L162
+ 2984 0588 9C01      		movw r18,r24
+ 2985 058a 542F      		mov r21,r20
+ 2986               	.L163:
+ 913:main.c        **** 			{
+ 914:main.c        **** 				break;
+ 915:main.c        **** 			}
+ 916:main.c        **** 		}
+ 917:main.c        **** 
+ 918:main.c        **** 		if(x == LED_SIZE)
+ 919:main.c        **** 		{
+ 920:main.c        **** 			v = 1;
+ 921:main.c        **** 			for(j = y; j > 0; --j)
+ 2988               	.LM479:
+ 2989 058c 5111      		cpse r21,__zero_reg__
+ 2990 058e 00C0      		rjmp .L165
+ 920:main.c        **** 			for(j = y; j > 0; --j)
+ 2992               	.LM480:
+ 2993 0590 31E0      		ldi r19,lo8(1)
+ 2994               	.L161:
+ 2995 0592 4F5F      		subi r20,lo8(-(1))
+ 2996 0594 4096      		adiw r24,16
+ 908:main.c        **** 	{
+ 2998               	.LM481:
+ 2999 0596 8115      		cp r24,__zero_reg__
+ 3000 0598 A1E0      		ldi r26,1
+ 3001 059a 9A07      		cpc r25,r26
+ 3002 059c 01F4      		brne .L160
+ 922:main.c        **** 			{
+ 923:main.c        **** 				for(i = 0; i < LED_SIZE; ++i)
+ 924:main.c        **** 				{
+ 925:main.c        **** 					_field[j * LED_SIZE + i] =
+ 926:main.c        **** 						_field[(j - 1) * LED_SIZE + i];
+ 927:main.c        **** 				}
+ 928:main.c        **** 			}
+ 929:main.c        **** 		}
+ 930:main.c        **** 	}
+ 931:main.c        **** 
+ 932:main.c        **** 	/* Redraw */
+ 933:main.c        **** 	if(v)
+ 3004               	.LM482:
+ 3005 059e 3323      		tst r19
+ 3006 05a0 01F0      		breq .L167
+ 934:main.c        **** 	{
+ 935:main.c        **** 		led_clear(&black);
+ 3008               	.LM483:
+ 3009 05a2 0E94 0000 		call led_clear.constprop.0
+ 936:main.c        **** 		for(y = 0; y < LED_SIZE; ++y)
+ 3011               	.LM484:
+ 3012 05a6 212C      		mov r2,__zero_reg__
+ 3013               	.L168:
+ 3014 05a8 A701      		movw r20,r14
+ 3015 05aa 4050      		subi r20,lo8(-(_field))
+ 3016 05ac 5040      		sbci r21,hi8(-(_field))
+ 3017 05ae 6A01      		movw r12,r20
+ 937:main.c        **** 		{
+ 938:main.c        **** 			for(x = 0; x < LED_SIZE; ++x)
+ 3019               	.LM485:
+ 3020 05b0 312C      		mov r3,__zero_reg__
+ 3021               	.L170:
+ 939:main.c        **** 			{
+ 940:main.c        **** 				if((v = _field[y * LED_SIZE + x]))
+ 3023               	.LM486:
+ 3024 05b2 F601      		movw r30,r12
+ 3025 05b4 4191      		ld r20,Z+
+ 3026 05b6 6F01      		movw r12,r30
+ 3028               	.LM487:
+ 3029 05b8 4423      		tst r20
+ 3030 05ba 01F0      		breq .L169
+ 941:main.c        **** 				{
+ 942:main.c        **** 					--v;
+ 3032               	.LM488:
+ 3033 05bc 4150      		subi r20,lo8(-(-1))
+ 943:main.c        **** 					led_pixel(x, y, &_pieces[v].color);
+ 3035               	.LM489:
+ 3036 05be F52D      		mov r31,r5
+ 3037 05c0 4F02      		muls r20,r31
+ 3038 05c2 A001      		movw r20,r0
+ 3039 05c4 1124      		clr __zero_reg__
+ 3040 05c6 4050      		subi r20,lo8(-(_pieces+8))
+ 3041 05c8 5040      		sbci r21,hi8(-(_pieces+8))
+ 3042 05ca 622D      		mov r22,r2
+ 3043 05cc 832D      		mov r24,r3
+ 3044 05ce 0E94 0000 		call led_pixel
+ 3045               	.L169:
+ 3046 05d2 3394      		inc r3
+ 938:main.c        **** 			{
+ 3048               	.LM490:
+ 3049 05d4 20E1      		ldi r18,lo8(16)
+ 3050 05d6 3212      		cpse r3,r18
+ 3051 05d8 00C0      		rjmp .L170
+ 3052 05da 2394      		inc r2
+ 3053 05dc 30E1      		ldi r19,16
+ 3054 05de E30E      		add r14,r19
+ 3055 05e0 F11C      		adc r15,__zero_reg__
+ 936:main.c        **** 		{
+ 3057               	.LM491:
+ 3058 05e2 2212      		cpse r2,r18
+ 3059 05e4 00C0      		rjmp .L168
+ 3060               	.L167:
+ 3061               	.LBE99:
+ 3062               	.LBE102:
+ 399:main.c        **** 					}
+ 3064               	.LM492:
+ 3065 05e6 0E94 0000 		call piece_next
+ 3066 05ea 00C0      		rjmp .L155
+ 3067               	.L165:
+ 3068 05ec D901      		movw r26,r18
+ 3069 05ee A050      		subi r26,lo8(-(_field-16))
+ 3070 05f0 B040      		sbci r27,hi8(-(_field-16))
+ 3071 05f2 F901      		movw r30,r18
+ 3072 05f4 E050      		subi r30,lo8(-(_field))
+ 3073 05f6 F040      		sbci r31,hi8(-(_field))
+ 3074               	.LBB103:
+ 3075               	.LBB100:
+ 921:main.c        **** 			{
+ 3077               	.LM493:
+ 3078 05f8 60E1      		ldi r22,lo8(16)
+ 3079               	.L164:
+ 926:main.c        **** 				}
+ 3081               	.LM494:
+ 3082 05fa 7D91      		ld r23,X+
+ 925:main.c        **** 						_field[(j - 1) * LED_SIZE + i];
+ 3084               	.LM495:
+ 3085 05fc 7193      		st Z+,r23
+ 3086 05fe 6150      		subi r22,lo8(-(-1))
+ 923:main.c        **** 				{
+ 3088               	.LM496:
+ 3089 0600 01F4      		brne .L164
+ 3090 0602 5150      		subi r21,lo8(-(-1))
+ 3091 0604 2051      		subi r18,16
+ 3092 0606 3109      		sbc r19,__zero_reg__
+ 3093 0608 00C0      		rjmp .L163
+ 3094               	.LBE100:
+ 3095               	.LBE103:
+ 3133               	.Lscope20:
+ 3135               		.stabd	78,0,0
+ 3136               		.text
+ 3138               	.global	__vector_14
+ 3140               	__vector_14:
+ 3141               		.stabd	46,0,0
+ 427:main.c        **** 	++_ms;
+ 3143               	.LM497:
+ 3144               	.LFBB21:
+ 3145 063a 1F92 1FB6 		__gcc_isr 1
+ 3145      1F92 1124 
+ 3145      8F93 
+ 3146 0644 9F93      		push r25
+ 3147 0646 AF93      		push r26
+ 3148 0648 BF93      		push r27
+ 3149               	/* prologue: Signal */
+ 3150               	/* frame size = 0 */
+ 3151               	/* stack size = 3...7 */
+ 3152               	.L__stack_usage = 3 + __gcc_isr.n_pushed
+ 428:main.c        **** }
+ 3154               	.LM498:
+ 3155 064a 8091 0000 		lds r24,_ms
+ 3156 064e 9091 0000 		lds r25,_ms+1
+ 3157 0652 A091 0000 		lds r26,_ms+2
+ 3158 0656 B091 0000 		lds r27,_ms+3
+ 3159 065a 0196      		adiw r24,1
+ 3160 065c A11D      		adc r26,__zero_reg__
+ 3161 065e B11D      		adc r27,__zero_reg__
+ 3162 0660 8093 0000 		sts _ms,r24
+ 3163 0664 9093 0000 		sts _ms+1,r25
+ 3164 0668 A093 0000 		sts _ms+2,r26
+ 3165 066c B093 0000 		sts _ms+3,r27
+ 3166               	/* epilogue start */
+ 429:main.c        **** 
+ 3168               	.LM499:
+ 3169 0670 BF91      		pop r27
+ 3170 0672 AF91      		pop r26
+ 3171 0674 9F91      		pop r25
+ 3172 0676 8F91 1F90 		__gcc_isr 2
+ 3172      1FBE 1F90 
+ 3173 067e 1895      		reti
+ 3174               		__gcc_isr 0,r24
+ 3176               	.Lscope21:
+ 3178               		.stabd	78,0,0
+ 3180               	.global	__vector_9
+ 3182               	__vector_9:
+ 3183               		.stabd	46,0,0
+ 434:main.c        **** 	static uint16_t rc5_tmp;
+ 3185               	.LM500:
+ 3186               	.LFBB22:
+ 3187 0680 1F92 1FB6 		__gcc_isr 1
+ 3187      1F92 1124 
+ 3187      2F93 
+ 3188 068a 3F93      		push r19
+ 3189 068c 8F93      		push r24
+ 3190 068e 9F93      		push r25
+ 3191               	/* prologue: Signal */
+ 3192               	/* frame size = 0 */
+ 3193               	/* stack size = 3...7 */
+ 3194               	.L__stack_usage = 3 + __gcc_isr.n_pushed
+ 437:main.c        **** 
+ 3196               	.LM501:
+ 3197 0690 8EEF      		ldi r24,lo8(-2)
+ 3198 0692 8093 B200 		sts 178,r24
+ 439:main.c        **** 	{
+ 3200               	.LM502:
+ 3201 0696 8091 0000 		lds r24,rc5_time.1547
+ 3202 069a 8F5F      		subi r24,lo8(-(1))
+ 439:main.c        **** 	{
+ 3204               	.LM503:
+ 3205 069c 8093 0000 		sts rc5_time.1547,r24
+ 3206 06a0 8434      		cpi r24,lo8(68)
+ 3207 06a2 00F0      		brlo .L200
+ 441:main.c        **** 		{
+ 3209               	.LM504:
+ 3210 06a4 2091 0000 		lds r18,rc5_tmp.1545
+ 3211 06a8 3091 0000 		lds r19,rc5_tmp.1545+1
+ 441:main.c        **** 		{
+ 3213               	.LM505:
+ 3214 06ac 36FD      		sbrc r19,6
+ 3215 06ae 00C0      		rjmp .L201
+ 441:main.c        **** 		{
+ 3217               	.LM506:
+ 3218 06b0 35FF      		sbrs r19,5
+ 3219 06b2 00C0      		rjmp .L201
+ 443:main.c        **** 		}
+ 3221               	.LM507:
+ 3222 06b4 3093 0000 		sts rc5_data+1,r19
+ 3223 06b8 2093 0000 		sts rc5_data,r18
+ 3224               	.L201:
+ 446:main.c        **** 	}
+ 3226               	.LM508:
+ 3227 06bc 1092 0000 		sts rc5_tmp.1545+1,__zero_reg__
+ 3228 06c0 1092 0000 		sts rc5_tmp.1545,__zero_reg__
+ 3229               	.L200:
+ 449:main.c        **** 	{
+ 3231               	.LM509:
+ 3232 06c4 29B1      		in r18,0x9
+ 449:main.c        **** 	{
+ 3234               	.LM510:
+ 3235 06c6 9091 0000 		lds r25,rc5_bit.1546
+ 3236 06ca 2927      		eor r18,r25
+ 449:main.c        **** 	{
+ 3238               	.LM511:
+ 3239 06cc 27FF      		sbrs r18,7
+ 3240 06ce 00C0      		rjmp .L199
+ 451:main.c        **** 		if(rc5_time < RC5_PULSE_MIN)
+ 3242               	.LM512:
+ 3243 06d0 9095      		com r25
+ 3244 06d2 9093 0000 		sts rc5_bit.1546,r25
+ 452:main.c        **** 		{
+ 3246               	.LM513:
+ 3247 06d6 8631      		cpi r24,lo8(22)
+ 3248 06d8 00F4      		brsh .L204
+ 454:main.c        **** 		}
+ 3250               	.LM514:
+ 3251 06da 1092 0000 		sts rc5_tmp.1545+1,__zero_reg__
+ 3252 06de 1092 0000 		sts rc5_tmp.1545,__zero_reg__
+ 3253               	.L204:
+ 457:main.c        **** 		{
+ 3255               	.LM515:
+ 3256 06e2 2091 0000 		lds r18,rc5_tmp.1545
+ 3257 06e6 3091 0000 		lds r19,rc5_tmp.1545+1
+ 457:main.c        **** 		{
+ 3259               	.LM516:
+ 3260 06ea 2115      		cp r18,__zero_reg__
+ 3261 06ec 3105      		cpc r19,__zero_reg__
+ 3262 06ee 01F0      		breq .L205
+ 457:main.c        **** 		{
+ 3264               	.LM517:
+ 3265 06f0 8D32      		cpi r24,lo8(45)
+ 3266 06f2 00F0      		brlo .L199
+ 459:main.c        **** 			{
+ 3268               	.LM518:
+ 3269 06f4 36FD      		sbrc r19,6
+ 3270 06f6 00C0      		rjmp .L207
+ 3271               	.L205:
+ 461:main.c        **** 			}
+ 3273               	.LM519:
+ 3274 06f8 220F      		lsl r18
+ 3275 06fa 331F      		rol r19
+ 3276 06fc 3093 0000 		sts rc5_tmp.1545+1,r19
+ 3277 0700 2093 0000 		sts rc5_tmp.1545,r18
+ 3278               	.L207:
+ 464:main.c        **** 			{
+ 3280               	.LM520:
+ 3281 0704 97FD      		sbrc r25,7
+ 3282 0706 00C0      		rjmp .L208
+ 466:main.c        **** 			}
+ 3284               	.LM521:
+ 3285 0708 8091 0000 		lds r24,rc5_tmp.1545
+ 3286 070c 9091 0000 		lds r25,rc5_tmp.1545+1
+ 3287 0710 8160      		ori r24,1
+ 3288 0712 9093 0000 		sts rc5_tmp.1545+1,r25
+ 3289 0716 8093 0000 		sts rc5_tmp.1545,r24
+ 3290               	.L208:
+ 469:main.c        **** 		}
+ 3292               	.LM522:
+ 3293 071a 1092 0000 		sts rc5_time.1547,__zero_reg__
+ 3294               	.L199:
+ 3295               	/* epilogue start */
+ 472:main.c        **** 
+ 3297               	.LM523:
+ 3298 071e 9F91      		pop r25
+ 3299 0720 8F91      		pop r24
+ 3300 0722 3F91      		pop r19
+ 3301 0724 2F91 1F90 		__gcc_isr 2
+ 3301      1FBE 1F90 
+ 3302 072c 1895      		reti
+ 3303               		__gcc_isr 0,r18
+ 3310               	.Lscope22:
+ 3312               		.stabd	78,0,0
+ 3313               		.local	rc5_bit.1546
+ 3314               		.comm	rc5_bit.1546,1,1
+ 3316               		.local	rc5_tmp.1545
+ 3317               		.comm	rc5_tmp.1545,2,1
+ 3319               		.local	rc5_time.1547
+ 3320               		.comm	rc5_time.1547,1,1
+ 3322               		.local	bag.1660
+ 3323               		.comm	bag.1660,7,1
+ 3325               		.data
+ 3328               	idx.1661:
+ 3329 0000 07        		.byte	7
+ 3331               		.section	.progmem.data,"a",@progbits
+ 3334               	__c.1514:
+ 3335 0000 4B45 593A 		.string	"KEY: "
+ 3335      2000 
+ 3337               	.global	_pieces
+ 3338               		.data
+ 3341               	_pieces:
+ 3342 0001 000F      		.word	3840
+ 3343 0003 2222      		.word	8738
+ 3344 0005 F000      		.word	240
+ 3345 0007 4444      		.word	17476
+ 3346 0009 00        		.byte	0
+ 3347 000a FF        		.byte	-1
+ 3348 000b FF        		.byte	-1
+ 3349 000c C044      		.word	17600
+ 3350 000e 008E      		.word	-29184
+ 3351 0010 4064      		.word	25664
+ 3352 0012 200E      		.word	3616
+ 3353 0014 00        		.byte	0
+ 3354 0015 00        		.byte	0
+ 3355 0016 FF        		.byte	-1
+ 3356 0017 6044      		.word	17504
+ 3357 0019 800E      		.word	3712
+ 3358 001b 40C4      		.word	-15296
+ 3359 001d 002E      		.word	11776
+ 3360 001f FF        		.byte	-1
+ 3361 0020 7F        		.byte	127
+ 3362 0021 00        		.byte	0
+ 3363 0022 00CC      		.word	-13312
+ 3364 0024 00CC      		.word	-13312
+ 3365 0026 00CC      		.word	-13312
+ 3366 0028 00CC      		.word	-13312
+ 3367 002a FF        		.byte	-1
+ 3368 002b FF        		.byte	-1
+ 3369 002c 00        		.byte	0
+ 3370 002d C006      		.word	1728
+ 3371 002f 408C      		.word	-29632
+ 3372 0031 006C      		.word	27648
+ 3373 0033 2046      		.word	17952
+ 3374 0035 00        		.byte	0
+ 3375 0036 FF        		.byte	-1
+ 3376 0037 00        		.byte	0
+ 3377 0038 400E      		.word	3648
+ 3378 003a 404C      		.word	19520
+ 3379 003c 004E      		.word	19968
+ 3380 003e 4046      		.word	17984
+ 3381 0040 FF        		.byte	-1
+ 3382 0041 00        		.byte	0
+ 3383 0042 FF        		.byte	-1
+ 3384 0043 600C      		.word	3168
+ 3385 0045 804C      		.word	19584
+ 3386 0047 00C6      		.word	-14848
+ 3387 0049 4026      		.word	9792
+ 3388 004b FF        		.byte	-1
+ 3389 004c 00        		.byte	0
+ 3390 004d 00        		.byte	0
+ 3392               		.comm	_piece,4,1
+ 3394               		.local	_tetris_update_ticks
+ 3395               		.comm	_tetris_update_ticks,2,1
+ 3397               		.local	_field
+ 3398               		.comm	_field,256,1
+ 3400               		.local	_snake_update_ticks
+ 3401               		.comm	_snake_update_ticks,2,1
+ 3405               	_snake_colors:
+ 3406 004e FF        		.byte	-1
+ 3407 004f 00        		.byte	0
+ 3408 0050 00        		.byte	0
+ 3409 0051 00        		.byte	0
+ 3410 0052 FF        		.byte	-1
+ 3411 0053 00        		.byte	0
+ 3412 0054 00        		.byte	0
+ 3413 0055 00        		.byte	0
+ 3414 0056 FF        		.byte	-1
+ 3415 0057 FF        		.byte	-1
+ 3416 0058 FF        		.byte	-1
+ 3417 0059 00        		.byte	0
+ 3418 005a FF        		.byte	-1
+ 3419 005b 00        		.byte	0
+ 3420 005c FF        		.byte	-1
+ 3421 005d 00        		.byte	0
+ 3422 005e FF        		.byte	-1
+ 3423 005f FF        		.byte	-1
+ 3424 0060 FF        		.byte	-1
+ 3425 0061 80        		.byte	-128
+ 3426 0062 00        		.byte	0
+ 3428               		.local	_snake
+ 3429               		.comm	_snake,34,1
+ 3431               		.comm	_food,3,1
+ 3433               		.comm	_dir,1,1
+ 3435               		.section	.progmem.data,"a",@progbits
+ 3438               	img:
+ 3439 0006 00        		.string	""
+ 3440 0007 00        		.string	""
+ 3441 0008 00        		.string	""
+ 3442 0009 380C 3C1E 		.string	"8\f<\036\016\036\006\f\006"
+ 3442      0E1E 060C 
+ 3442      0600 
+ 3443 0013 0600      		.string	"\006"
+ 3444 0015 0600      		.string	"\006"
+ 3445 0017 0600      		.string	"\006"
+ 3446 0019 060C 061E 		.string	"\006\f\006\036\006\036\016\f<"
+ 3446      061E 0E0C 
+ 3446      3C00 
+ 3447 0023 3800      		.string	"8"
+ 3448 0025 00        		.string	""
+ 3449 0026 00        		.string	""
+ 3450 0027 00        		.string	""
+ 3451 0028 00        		.string	""
+ 3452 0029 180C 1C1E 		.string	"\030\f\034\036\f\036\f\f\f"
+ 3452      0C1E 0C0C 
+ 3452      0C00 
+ 3453 0033 0C00      		.string	"\f"
+ 3454 0035 0C00      		.string	"\f"
+ 3455 0037 0C00      		.string	"\f"
+ 3456 0039 0C0C 0C1E 		.string	"\f\f\f\036\f\036\f\f\034"
+ 3456      0C1E 0C0C 
+ 3456      1C00 
+ 3457 0043 1800      		.string	"\030"
+ 3458 0045 00        		.string	""
+ 3459 0046 00        		.string	""
+ 3460 0047 00        		.string	""
+ 3461 0048 00        		.string	""
+ 3462 0049 0C0C 0C1E 		.string	"\f\f\f\036\f\036\f\f\f"
+ 3462      0C1E 0C0C 
+ 3462      0C00 
+ 3463 0053 0C00      		.string	"\f"
+ 3464 0055 0C00      		.string	"\f"
+ 3465 0057 0C00      		.string	"\f"
+ 3466 0059 0C0C 0C1E 		.string	"\f\f\f\036\f\036\f\f\f"
+ 3466      0C1E 0C0C 
+ 3466      0C00 
+ 3467 0063 0C00      		.string	"\f"
+ 3468 0065 00        		.string	""
+ 3469 0066 00        		.string	""
+ 3470 0067 00        		.string	""
+ 3471 0068 00        		.string	""
+ 3472 0069 0C0C 1C1E 		.string	"\f\f\034\036\030\036\030\f\030"
+ 3472      181E 180C 
+ 3472      1800 
+ 3473 0073 1800      		.string	"\030"
+ 3474 0075 1800      		.string	"\030"
+ 3475 0077 1800      		.string	"\030"
+ 3476 0079 180C 181E 		.string	"\030\f\030\036\030\036\030\f\034"
+ 3476      181E 180C 
+ 3476      1C00 
+ 3477 0083 0C00      		.string	"\f"
+ 3478 0085 00        		.string	""
+ 3479 0086 00        		.string	""
+ 3480 0087 00        		.string	""
+ 3481 0088 00        		.string	""
+ 3482 0089 0E0C 1E1E 		.string	"\016\f\036\0368\0360\f0"
+ 3482      381E 300C 
+ 3482      3000 
+ 3483 0093 3000      		.string	"0"
+ 3484 0095 3000      		.string	"0"
+ 3485 0097 3000      		.string	"0"
+ 3486 0099 300C 301E 		.string	"0\f0\0360\0368\f\036"
+ 3486      301E 380C 
+ 3486      1E00 
+ 3487 00a3 0E00      		.string	"\016"
+ 3488 00a5 00        		.string	""
+ 3490               		.local	_count
+ 3491               		.comm	_count,2,1
+ 3493               		.local	_sum
+ 3494               		.comm	_sum,4,1
+ 3496               		.data
+ 3499               	_avg:
+ 3500 0063 FF        		.byte	-1
+ 3502               		.local	black
+ 3503               		.comm	black,3,1
+ 3505               		.local	_mode
+ 3506               		.comm	_mode,1,1
+ 3508               		.local	_ms
+ 3509               		.comm	_ms,4,1
+ 3511               		.local	rc5_data
+ 3512               		.comm	rc5_data,2,1
+ 3514               		.local	_pixels
+ 3515               		.comm	_pixels,768,1
+ 3517               		.text
+ 3519               	.Letext0:
+ 3520               		.ident	"GCC: (GNU) 9.2.0"
+ 3521               	.global __do_copy_data
+ 3522               	.global __do_clear_bss
+DEFINED SYMBOLS
+                            *ABS*:0000000000000000 main.c
+     /tmp/cczuRzAx.s:2      *ABS*:000000000000003e __SP_H__
+     /tmp/cczuRzAx.s:3      *ABS*:000000000000003d __SP_L__
+     /tmp/cczuRzAx.s:4      *ABS*:000000000000003f __SREG__
+     /tmp/cczuRzAx.s:5      *ABS*:0000000000000000 __tmp_reg__
+     /tmp/cczuRzAx.s:6      *ABS*:0000000000000001 __zero_reg__
+     /tmp/cczuRzAx.s:123    .text:0000000000000000 piece_valid
+                            *COM*:0000000000000004 _piece
+     /tmp/cczuRzAx.s:3341   .data:0000000000000001 _pieces
+     /tmp/cczuRzAx.s:3395   .bss:000000000000000d _field
+     /tmp/cczuRzAx.s:276    .text:0000000000000090 random_food
+                            *COM*:0000000000000003 _food
+     /tmp/cczuRzAx.s:3401   .bss:000000000000010f _snake
+     /tmp/cczuRzAx.s:414    .text:0000000000000124 piece_next
+     /tmp/cczuRzAx.s:3328   .data:0000000000000000 idx.1661
+     /tmp/cczuRzAx.s:3320   .bss:0000000000000004 bag.1660
+     /tmp/cczuRzAx.s:544    .text:00000000000001b2 led_pixel
+     /tmp/cczuRzAx.s:3512   .bss:0000000000000141 _pixels
+     /tmp/cczuRzAx.s:653    .text:000000000000020a draw_snake
+     /tmp/cczuRzAx.s:3405   .data:000000000000004e _snake_colors
+     /tmp/cczuRzAx.s:723    .text:0000000000000246 draw_food
+     /tmp/cczuRzAx.s:756    .text:0000000000000260 piece_undraw
+     /tmp/cczuRzAx.s:3494   .bss:0000000000000137 black
+     /tmp/cczuRzAx.s:872    .text:00000000000002e0 piece_draw
+     /tmp/cczuRzAx.s:998    .text:0000000000000372 snake_advance
+                            *COM*:0000000000000001 _dir
+     /tmp/cczuRzAx.s:1113   .text:00000000000003e8 led_clear.constprop.0
+     /tmp/cczuRzAx.s:1162   .text:000000000000040a snake_init
+     /tmp/cczuRzAx.s:3398   .bss:000000000000010d _snake_update_ticks
+     /tmp/cczuRzAx.s:1253   .text:000000000000045e ws2812.constprop.0
+     /tmp/cczuRzAx.s:1329   .text:000000000000049a loop675
+     /tmp/cczuRzAx.s:1358   .text:00000000000004b8 led_update
+     /tmp/cczuRzAx.s:1385   .text:00000000000004cc field_clear
+     /tmp/cczuRzAx.s:1421   .text:00000000000004e2 img_value
+     /tmp/cczuRzAx.s:3438   .progmem.data:0000000000000006 img
+     /tmp/cczuRzAx.s:1684   .text:00000000000005e0 uart_tx
+     /tmp/cczuRzAx.s:1715   .text:00000000000005ee uart_tx_s
+     /tmp/cczuRzAx.s:1762   .text:0000000000000608 uart_tx_P
+     /tmp/cczuRzAx.s:1812   .text:0000000000000624 uart_rx
+     /tmp/cczuRzAx.s:1853   .text.startup:0000000000000000 main
+     /tmp/cczuRzAx.s:3499   .data:0000000000000063 _avg
+     /tmp/cczuRzAx.s:3491   .bss:0000000000000133 _sum
+     /tmp/cczuRzAx.s:3429   .bss:0000000000000131 _count
+     /tmp/cczuRzAx.s:3503   .bss:000000000000013a _mode
+     /tmp/cczuRzAx.s:3509   .bss:000000000000013f rc5_data
+     /tmp/cczuRzAx.s:3334   .progmem.data:0000000000000000 __c.1514
+     /tmp/cczuRzAx.s:3506   .bss:000000000000013b _ms
+     /tmp/cczuRzAx.s:3323   .bss:000000000000000b _tetris_update_ticks
+     /tmp/cczuRzAx.s:3140   .text:000000000000063a __vector_14
+                            *ABS*:0000000000000003 __gcc_isr.n_pushed.001
+     /tmp/cczuRzAx.s:3182   .text:0000000000000680 __vector_9
+                            *ABS*:0000000000000003 __gcc_isr.n_pushed.002
+     /tmp/cczuRzAx.s:3317   .bss:0000000000000003 rc5_time.1547
+     /tmp/cczuRzAx.s:3314   .bss:0000000000000001 rc5_tmp.1545
+                             .bss:0000000000000000 rc5_bit.1546
+
+UNDEFINED SYMBOLS
+rand
+__divmodhi4
+strtol
+__udivmodsi4
+__itoa_ncheck
+__do_copy_data
+__do_clear_bss

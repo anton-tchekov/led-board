@@ -1,0 +1,276 @@
+   1               		.file	"irsnd-main-avr.c"
+   2               	__SP_L__ = 0x3d
+   3               	__SREG__ = 0x3f
+   4               	__tmp_reg__ = 0
+   5               	__zero_reg__ = 1
+   8               		.text
+   9               	.Ltext0:
+ 124               		.section	.text.startup,"ax",@progbits
+ 126               	.global	main
+ 128               	main:
+ 129               		.stabd	46,0,0
+   1:irsnd-main-avr.c **** #include "irsnd.h"
+   2:irsnd-main-avr.c **** 
+   3:irsnd-main-avr.c **** #define BTN_IN                 PINB
+   4:irsnd-main-avr.c **** #define BTN_COUNT             7
+   5:irsnd-main-avr.c **** #define BTN_DELAY              0xFF
+   6:irsnd-main-avr.c **** 
+   7:irsnd-main-avr.c **** int main(void)
+   8:irsnd-main-avr.c **** {
+ 131               	.LM0:
+ 132               	.LFBB1:
+ 133 0000 CDB7      		in r28,__SP_L__
+ 134 0002 DD27      		clr r29
+ 135 0004 C650      		subi r28,lo8(-(-6))
+ 136 0006 CDBF      		out __SP_L__,r28
+ 137               	/* prologue: function */
+ 138               	/* frame size = 6 */
+ 139               	/* stack size = 6 */
+ 140               	.L__stack_usage = 6
+   9:irsnd-main-avr.c **** 	static uint8_t btn_pins[BTN_COUNT] = { 0, 1, 3, 4, 5, 6, 7 };
+  10:irsnd-main-avr.c **** 	static uint8_t btn_codes[BTN_COUNT] = { 1, 3, 7, 2, 6, 8, 4 };
+  11:irsnd-main-avr.c **** 	static uint8_t btn_timer[BTN_COUNT];
+  12:irsnd-main-avr.c **** 
+  13:irsnd-main-avr.c **** 	IRMP_DATA irmp_data;
+  14:irsnd-main-avr.c **** 	irsnd_init();
+ 142               	.LM1:
+ 143 0008 00D0      		rcall irsnd_init
+  15:irsnd-main-avr.c **** 	irmp_data.protocol = IRMP_RC5_PROTOCOL;
+ 145               	.LM2:
+ 146 000a 87E0      		ldi r24,lo8(7)
+ 147 000c 8983      		std Y+1,r24
+  16:irsnd-main-avr.c **** 	irmp_data.address = 0x00FF;
+ 149               	.LM3:
+ 150 000e 8FEF      		ldi r24,lo8(-1)
+ 151 0010 90E0      		ldi r25,0
+ 152 0012 9B83      		std Y+3,r25
+ 153 0014 8A83      		std Y+2,r24
+  17:irsnd-main-avr.c **** 	irmp_data.flags = 0;
+ 155               	.LM4:
+ 156 0016 1E82      		std Y+6,__zero_reg__
+  18:irsnd-main-avr.c **** 	OCR1A = (F_CPU / F_INTERRUPTS) - 1;
+ 158               	.LM5:
+ 159 0018 8FE6      		ldi r24,lo8(111)
+ 160 001a 91E0      		ldi r25,lo8(1)
+ 161 001c 9BBD      		out 0x2a+1,r25
+ 162 001e 8ABD      		out 0x2a,r24
+  19:irsnd-main-avr.c **** 	TCCR1B = (1 << WGM12) | (1 << CS10);
+ 164               	.LM6:
+ 165 0020 89E0      		ldi r24,lo8(9)
+ 166 0022 8EBD      		out 0x2e,r24
+  20:irsnd-main-avr.c **** 	TIMSK = (1 << OCIE1A);
+ 168               	.LM7:
+ 169 0024 80E4      		ldi r24,lo8(64)
+ 170 0026 89BF      		out 0x39,r24
+  21:irsnd-main-avr.c **** 	PORTB = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) |
+ 172               	.LM8:
+ 173 0028 8BEF      		ldi r24,lo8(-5)
+ 174 002a 88BB      		out 0x18,r24
+  22:irsnd-main-avr.c **** 		(1 << 5) | (1 << 6) | (1 << 7);
+  23:irsnd-main-avr.c **** 	sei();
+ 176               	.LM9:
+ 177               	/* #APP */
+ 178               	 ;  23 "irsnd-main-avr.c" 1
+ 179 002c 7894      		sei
+ 180               	 ;  0 "" 2
+ 181               	/* #NOAPP */
+ 182               	.LBB2:
+  24:irsnd-main-avr.c **** 	for(;;)
+  25:irsnd-main-avr.c **** 	{
+  26:irsnd-main-avr.c **** 		uint8_t i;
+  27:irsnd-main-avr.c **** 		for(i = 0; i < BTN_COUNT; ++i)
+  28:irsnd-main-avr.c **** 		{
+  29:irsnd-main-avr.c **** 			if(BTN_IN & (1 << btn_pins[i]))
+  30:irsnd-main-avr.c **** 			{
+  31:irsnd-main-avr.c **** 				if(btn_timer[i])
+  32:irsnd-main-avr.c **** 				{
+  33:irsnd-main-avr.c **** 					--btn_timer[i];
+  34:irsnd-main-avr.c **** 				}
+  35:irsnd-main-avr.c **** 			}
+  36:irsnd-main-avr.c **** 			else
+  37:irsnd-main-avr.c **** 			{
+  38:irsnd-main-avr.c **** 				if(btn_timer[i] == 0)
+  39:irsnd-main-avr.c **** 				{
+  40:irsnd-main-avr.c **** 					btn_timer[i] = BTN_DELAY;
+ 184               	.LM10:
+ 185 002e BB24      		clr r11
+ 186 0030 BA94      		dec r11
+ 187               	.L5:
+ 188 0032 80E0      		ldi r24,lo8(btn_pins.1658)
+ 189 0034 C82E      		mov r12,r24
+ 190 0036 80E0      		ldi r24,hi8(btn_pins.1658)
+ 191 0038 D82E      		mov r13,r24
+ 192 003a 90E0      		ldi r25,lo8(btn_timer.1660)
+ 193 003c E92E      		mov r14,r25
+ 194 003e 90E0      		ldi r25,hi8(btn_timer.1660)
+ 195 0040 F92E      		mov r15,r25
+ 196               	.LBE2:
+   8:irsnd-main-avr.c **** 	static uint8_t btn_pins[BTN_COUNT] = { 0, 1, 3, 4, 5, 6, 7 };
+ 198               	.LM11:
+ 199 0042 10E0      		ldi r17,0
+ 200 0044 00E0      		ldi r16,0
+ 201               	.L4:
+ 202               	.LBB3:
+  29:irsnd-main-avr.c **** 			{
+ 204               	.LM12:
+ 205 0046 26B3      		in r18,0x16
+  29:irsnd-main-avr.c **** 			{
+ 207               	.LM13:
+ 208 0048 F601      		movw r30,r12
+ 209 004a 9191      		ld r25,Z+
+ 210 004c 6F01      		movw r12,r30
+ 211 004e F701      		movw r30,r14
+ 212 0050 8191      		ld r24,Z+
+ 213 0052 7F01      		movw r14,r30
+  29:irsnd-main-avr.c **** 			{
+ 215               	.LM14:
+ 216 0054 30E0      		ldi r19,0
+ 217 0056 00C0      		rjmp 2f
+ 218               		1:
+ 219 0058 3595      		asr r19
+ 220 005a 2795      		ror r18
+ 221               		2:
+ 222 005c 9A95      		dec r25
+ 223 005e 02F4      		brpl 1b
+  29:irsnd-main-avr.c **** 			{
+ 225               	.LM15:
+ 226 0060 20FF      		sbrs r18,0
+ 227 0062 00C0      		rjmp .L2
+  31:irsnd-main-avr.c **** 				{
+ 229               	.LM16:
+ 230 0064 8823      		tst r24
+ 231 0066 01F0      		breq .L3
+  33:irsnd-main-avr.c **** 				}
+ 233               	.LM17:
+ 234 0068 3197      		sbiw r30,1
+ 235 006a 8150      		subi r24,lo8(-(-1))
+ 236 006c 8083      		st Z,r24
+ 237               	.L3:
+ 238 006e 0F5F      		subi r16,-1
+ 239 0070 1F4F      		sbci r17,-1
+  27:irsnd-main-avr.c **** 		{
+ 241               	.LM18:
+ 242 0072 0730      		cpi r16,7
+ 243 0074 1105      		cpc r17,__zero_reg__
+ 244 0076 01F4      		brne .L4
+ 245 0078 00C0      		rjmp .L5
+ 246               	.L2:
+  38:irsnd-main-avr.c **** 				{
+ 248               	.LM19:
+ 249 007a 8111      		cpse r24,__zero_reg__
+ 250 007c 00C0      		rjmp .L3
+ 252               	.LM20:
+ 253 007e 3197      		sbiw r30,1
+ 254 0080 B082      		st Z,r11
+  41:irsnd-main-avr.c **** 					irmp_data.command = btn_codes[i];
+ 256               	.LM21:
+ 257 0082 F801      		movw r30,r16
+ 258 0084 E050      		subi r30,lo8(-(btn_codes.1659))
+ 259 0086 F040      		sbci r31,hi8(-(btn_codes.1659))
+ 260 0088 8081      		ld r24,Z
+ 261 008a 90E0      		ldi r25,0
+ 262 008c 9D83      		std Y+5,r25
+ 263 008e 8C83      		std Y+4,r24
+  42:irsnd-main-avr.c **** 					irsnd_send_data(&irmp_data, TRUE);
+ 265               	.LM22:
+ 266 0090 61E0      		ldi r22,lo8(1)
+ 267 0092 CE01      		movw r24,r28
+ 268 0094 0196      		adiw r24,1
+ 269 0096 00D0      		rcall irsnd_send_data
+ 270 0098 00C0      		rjmp .L3
+ 271               	.LBE3:
+ 279               	.Lscope1:
+ 281               		.stabd	78,0,0
+ 282               		.text
+ 284               	.global	__vector_4
+ 286               	__vector_4:
+ 287               		.stabd	46,0,0
+  43:irsnd-main-avr.c **** 				}
+  44:irsnd-main-avr.c **** 			}
+  45:irsnd-main-avr.c **** 		}
+  46:irsnd-main-avr.c **** 	}
+  47:irsnd-main-avr.c **** }
+  48:irsnd-main-avr.c **** 
+  49:irsnd-main-avr.c **** ISR(TIMER1_COMPA_vect)
+  50:irsnd-main-avr.c **** {
+ 289               	.LM23:
+ 290               	.LFBB2:
+ 291 0000 1F92      		push r1
+ 292 0002 0F92      		push r0
+ 293 0004 0FB6      		in r0,__SREG__
+ 294 0006 0F92      		push r0
+ 295 0008 1124      		clr __zero_reg__
+ 296 000a 2F93      		push r18
+ 297 000c 3F93      		push r19
+ 298 000e 4F93      		push r20
+ 299 0010 5F93      		push r21
+ 300 0012 6F93      		push r22
+ 301 0014 7F93      		push r23
+ 302 0016 8F93      		push r24
+ 303 0018 9F93      		push r25
+ 304 001a AF93      		push r26
+ 305 001c BF93      		push r27
+ 306 001e EF93      		push r30
+ 307 0020 FF93      		push r31
+ 308               	/* prologue: Signal */
+ 309               	/* frame size = 0 */
+ 310               	/* stack size = 15 */
+ 311               	.L__stack_usage = 15
+  51:irsnd-main-avr.c **** 	irsnd_ISR();
+ 313               	.LM24:
+ 314 0022 00D0      		rcall irsnd_ISR
+ 315               	/* epilogue start */
+  52:irsnd-main-avr.c **** }
+ 317               	.LM25:
+ 318 0024 FF91      		pop r31
+ 319 0026 EF91      		pop r30
+ 320 0028 BF91      		pop r27
+ 321 002a AF91      		pop r26
+ 322 002c 9F91      		pop r25
+ 323 002e 8F91      		pop r24
+ 324 0030 7F91      		pop r23
+ 325 0032 6F91      		pop r22
+ 326 0034 5F91      		pop r21
+ 327 0036 4F91      		pop r20
+ 328 0038 3F91      		pop r19
+ 329 003a 2F91      		pop r18
+ 330 003c 0F90      		pop r0
+ 331 003e 0FBE      		out __SREG__,r0
+ 332 0040 0F90      		pop r0
+ 333 0042 1F90      		pop r1
+ 334 0044 1895      		reti
+ 336               	.Lscope2:
+ 338               		.stabd	78,0,0
+ 339               		.section	.rodata
+ 342               	btn_codes.1659:
+ 343 0000 0103 0702 		.ascii	"\001\003\007\002\006\b\004"
+ 343      0608 04
+ 345               		.local	btn_timer.1660
+ 346               		.comm	btn_timer.1660,7,1
+ 350               	btn_pins.1658:
+ 351 0007 00        		.string	""
+ 352 0008 0103 0405 		.ascii	"\001\003\004\005\006\007"
+ 352      0607 
+ 354               		.text
+ 356               	.Letext0:
+ 357               		.ident	"GCC: (GNU) 9.2.0"
+ 358               	.global __do_copy_data
+ 359               	.global __do_clear_bss
+DEFINED SYMBOLS
+                            *ABS*:0000000000000000 irsnd-main-avr.c
+     /tmp/ccauuUxL.s:2      *ABS*:000000000000003d __SP_L__
+     /tmp/ccauuUxL.s:3      *ABS*:000000000000003f __SREG__
+     /tmp/ccauuUxL.s:4      *ABS*:0000000000000000 __tmp_reg__
+     /tmp/ccauuUxL.s:5      *ABS*:0000000000000001 __zero_reg__
+     /tmp/ccauuUxL.s:128    .text.startup:0000000000000000 main
+     /tmp/ccauuUxL.s:350    .rodata:0000000000000007 btn_pins.1658
+                             .bss:0000000000000000 btn_timer.1660
+     /tmp/ccauuUxL.s:342    .rodata:0000000000000000 btn_codes.1659
+     /tmp/ccauuUxL.s:286    .text:0000000000000000 __vector_4
+
+UNDEFINED SYMBOLS
+irsnd_init
+irsnd_send_data
+irsnd_ISR
+__do_copy_data
+__do_clear_bss
